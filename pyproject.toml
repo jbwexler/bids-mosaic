@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bids-mosaic"
+name = "bidsmosaic"
 version = "0.0.1"
 dependencies = [
     "numpy",
@@ -12,3 +12,6 @@ dependencies = [
     "fpdf2",
     "pillow"
 ]
+
+[project.scripts]
+bids-mosaic = "bidsmosaic.mosaic:main"

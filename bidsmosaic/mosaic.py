@@ -97,7 +97,7 @@ def create_pdf(img_dir_path: str, out_path: str) -> None:
     """Creates a pdf containing images aligned in a grid"""
     pdf = FPDF()
     pdf.add_page()
-    # pdf.set_font("Helvetica", size=32)
+    pdf.set_font("Helvetica", size=32)
 
     title = os.path.basename(out_path)
     title = title.removesuffix(".pdf")
@@ -119,23 +119,8 @@ def create_pdf(img_dir_path: str, out_path: str) -> None:
     pdf.output(out_path)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-d", "--dataset", type=str, help="Path to dataset")
-    parser.add_argument(
-        "-o",
-        "--out-file",
-        type=str,
-        help="Path to output pdf. Defaults to <input dir name>_mosaics.pdf in working directory.",
-    )
-    parser.add_argument(
-        "--png-dir",
-        type=str,
-        help="Path to existing directory of .png files, bypassing creation of those from .nii files.",
-    )
-
-    args = parser.parse_args()
-
+def create_mosaic(args: argparse.Namespace) -> None:
+    """Creates a mosaic pdf."""
     if args.out_file:
         out_file = args.out_file
     else:
@@ -161,6 +146,25 @@ def main():
         temp_dir.cleanup()
     else:
         create_pdf(args.png_dir, out_file)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--dataset", type=str, help="Path to dataset")
+    parser.add_argument(
+        "-o",
+        "--out-file",
+        type=str,
+        help="Path to output pdf. Defaults to <input dir name>_mosaics.pdf in working directory.",
+    )
+    parser.add_argument(
+        "--png-dir",
+        type=str,
+        help="Path to existing directory of .png files, bypassing creation of those from .nii files.",
+    )
+
+    args = parser.parse_args()
+    create_mosaic(args)
 
 
 if __name__ == "__main__":
