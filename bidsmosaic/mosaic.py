@@ -3,6 +3,7 @@ import argparse
 import os.path
 import glob
 import tempfile
+import json
 from bids import BIDSLayout
 from bids.layout.models import BIDSImageFile
 from nilearn.plotting import plot_img
@@ -93,16 +94,18 @@ def add_image_text(img_path: str, text: str) -> None:
     img.save(img_path, "PNG")
 
 
-def create_pdf(img_dir_path: str, out_path: str) -> None:
+def add_new_section(pdf: FPDF, title: str) -> None:
+    """Creates a new pdf page with a title."""
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=32, style="B")
+    pdf.cell(0, 10, title, align="C")
+    pdf.ln(20)
+
+
+def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     """Creates a pdf containing images aligned in a grid"""
     pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=32)
-
-    title = os.path.basename(out_path)
-    title = title.removesuffix(".pdf")
-    title = title.replace("_", " ")
-    pdf.set_title(title)
+    add_new_section(pdf, "Anatomical Images")
 
     num_col = 6
     image_list = sorted(glob.glob(img_dir_path + "/*"))
@@ -115,6 +118,18 @@ def create_pdf(img_dir_path: str, out_path: str) -> None:
             row = table.row()
             for j, img in enumerate(img_row):
                 row.cell(img=img)
+
+    if metadata:
+        add_new_section(pdf, "Metadata")
+
+        pdf.set_font("Helvetica", size=12)
+        meta_dict = json.loads(metadata)
+
+        with pdf.table(first_row_as_headings=False) as table:
+            for k, v in meta_dict.items():
+                row = table.row()
+                row.cell(text=k)
+                row.cell(text=v)
 
     pdf.output(out_path)
 
@@ -141,11 +156,11 @@ def create_mosaic(args: argparse.Namespace) -> None:
             png_path = create_slice_img(file, temp_dir.name)
             add_image_text(png_path, file.filename)
 
-        create_pdf(temp_dir.name, out_file)
+        create_pdf(temp_dir.name, out_file, args.metadata)
 
         temp_dir.cleanup()
     else:
-        create_pdf(args.png_dir, out_file)
+        create_pdf(args.png_dir, out_file, args.metadata)
 
 
 def main():
@@ -161,6 +176,12 @@ def main():
         "--png-dir",
         type=str,
         help="Path to existing directory of .png files, bypassing creation of those from .nii files.",
+    )
+    parser.add_argument(
+        "-m",
+        "--metadata",
+        type=str,
+        help="JSON string to include as metadata at the end of the output file.",
     )
 
     args = parser.parse_args()
