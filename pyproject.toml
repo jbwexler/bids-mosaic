@@ -9,6 +9,7 @@ dependencies = [
     "numpy",
     "pybids",
     "nilearn",
+    "nibabel",
     "fpdf2",
     "pillow"
 ]
