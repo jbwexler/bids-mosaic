@@ -6,7 +6,6 @@ import tempfile
 import json
 import logging
 from bids import BIDSLayout
-from bids.layout.models import BIDSImageFile
 from nilearn.plotting import plot_img
 import nibabel as nb
 from fpdf import FPDF
@@ -26,6 +25,7 @@ def add_margin_below(pil_img: Image, margin_size: int):
 def create_slice_img(
     img_path: str,
     out_dir: str,
+    ds_path: str,
     display_mode="x",
     cut_coords=np.array([0]),
     colorbar=False,
@@ -37,8 +37,9 @@ def create_slice_img(
     except FileNotFoundError:
         logging.error("%s was not found." % img_path)
         return
-
-    out_file = img_path.replace("/", ":") + ".png"
+    
+    out_file = os.path.relpath(img_path, ds_path) 
+    out_file = out_file.replace("/", ":") + ".png"
     out_path = os.path.join(out_dir, out_file)
 
     plot_img(
@@ -147,7 +148,7 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
 
     pdf.output(out_path)
 
-def create_anat_images(layout: BIDSLayout, temp_dir: str) -> None:
+def create_anat_images(layout: BIDSLayout, png_dir: str) -> None:
     """Creates anatomical mosaic .png files."""
     anat_layout_kwargs = {
         "datatype": "anat",
@@ -155,20 +156,19 @@ def create_anat_images(layout: BIDSLayout, temp_dir: str) -> None:
     }
 
     files = layout.get(**anat_layout_kwargs)
-    anat_temp_dir = os.path.join(temp_dir, "Anatomical")
-
+    anat_png_dir = os.path.join(png_dir, "Anatomical")
     for file in files:
-        png_path = create_slice_img(file.path, anat_temp_dir)
+        png_path = create_slice_img(file.path, anat_png_dir, layout.root)
         if png_path:
             add_image_text(png_path, file.filename)
 
 
-def create_fs_images(fs_dir: str, temp_dir: str) -> None:
+def create_fs_images(fs_dir: str, png_dir: str) -> None:
     """Creates freesurfer mosaic .png files."""
-    fs_temp_dir = os.path.join(temp_dir, "Freesurfer")
+    fs_png_dir = os.path.join(png_dir, "Freesurfer")
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
-        png_path = create_slice_img(file_path, fs_temp_dir)
+        png_path = create_slice_img(file_path, fs_png_dir, fs_dir)
         if png_path:
             add_image_text(png_path, os.path.relpath(file_path, fs_dir))
 
@@ -181,20 +181,26 @@ def create_mosaic(args: argparse.Namespace) -> None:
         in_abs = os.path.abspath(args.dataset)
         out_file = os.path.basename(in_abs) + "_mosaic.pdf"
 
-    if not args.png_dir:
-        temp_dir_obj = tempfile.TemporaryDirectory()
+    if not args.png_in_dir:
+        if args.png_out_dir:
+            png_dir = args.png_out_dir
+        else:
+            temp_dir_obj = tempfile.TemporaryDirectory()
+            png_dir = temp_dir_obj.name
+
         layout = BIDSLayout(args.dataset, validate=False)
         
         if args.anat:
-            create_anat_images(layout, temp_dir_obj.name)
+            create_anat_images(layout, png_dir)
         if args.freesurfer:
-            create_fs_images(args.freesurfer, temp_dir_obj.name)
+            create_fs_images(args.freesurfer, png_dir)
 
-        create_pdf(temp_dir_obj.name, out_file, args.metadata)
-
-        temp_dir_obj.cleanup()
+        create_pdf(png_dir, out_file, args.metadata)
+        
+        if not args.png_out_dir:
+            temp_dir_obj.cleanup()
     else:
-        create_pdf(args.png_dir, out_file, args.metadata)
+        create_pdf(args.png_in_dir, out_file, args.metadata)
 
 
 def main():
@@ -207,9 +213,14 @@ def main():
         help="Path to output pdf. Defaults to <input dir name>_mosaics.pdf in working directory.",
     )
     parser.add_argument(
-        "--png-dir",
+        "--png-in-dir",
         type=str,
         help="Path to existing directory of .png files, bypassing creation of those from .nii files.",
+    )
+    parser.add_argument(
+        "--png-out-dir",
+        type=str,
+        help="Path to directory to output .png slice images too, instead of creating a temp directory.",
     )
     parser.add_argument(
         "-m",
