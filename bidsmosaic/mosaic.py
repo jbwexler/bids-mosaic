@@ -238,39 +238,38 @@ def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
         )
 
 
-def create_mosaic_pdf(args: argparse.Namespace) -> None:
+def create_mosaic_pdf(
+    dataset: str,
+    out_file,
+    anat=True,
+    png_out_dir=None,
+    downsample=None,
+    freesurfer=None,
+    metadata=None,
+) -> None:
     """Creates a mosaic pdf."""
-    if args.out_file:
-        out_file = args.out_file
+    if png_out_dir:
+        png_dir = png_out_dir
     else:
-        in_abs = os.path.abspath(args.dataset)
-        out_file = os.path.basename(in_abs) + "_mosaic.pdf"
+        temp_dir_obj = tempfile.TemporaryDirectory()
+        png_dir = temp_dir_obj.name
 
-    if not args.png_in_dir:
-        if args.png_out_dir:
-            png_dir = args.png_out_dir
-        else:
-            temp_dir_obj = tempfile.TemporaryDirectory()
-            png_dir = temp_dir_obj.name
+    layout = BIDSLayout(dataset, validate=False)
 
-        layout = BIDSLayout(args.dataset, validate=False)
+    if anat:
+        create_anat_images(layout, png_dir, downsample=downsample)
+    if freesurfer:
+        create_fs_images(freesurfer, png_dir, downsample=downsample)
 
-        if args.anat:
-            create_anat_images(layout, png_dir, downsample=args.downsample)
-        if args.freesurfer:
-            create_fs_images(args.freesurfer, png_dir, downsample=args.downsample)
+    create_pdf(png_dir, out_file, metadata)
 
-        create_pdf(png_dir, out_file, args.metadata)
-
-        if not args.png_out_dir:
-            temp_dir_obj.cleanup()
-    else:
-        create_pdf(args.png_in_dir, out_file, args.metadata)
+    if not png_out_dir:
+        temp_dir_obj.cleanup()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d", "--dataset", type=str, help="Path to dataset")
+    parser.add_argument("dataset", type=str, help="Path to dataset")
     parser.add_argument(
         "-o",
         "--out-file",
@@ -294,8 +293,9 @@ def main():
         help="JSON string to include as metadata at the end of the output file.",
     )
     parser.add_argument(
-        "--anat",
-        action="store_true",
+        "--no-anat",
+        action="store_false",
+        dest="anat",
         help="Include mosaic of all anatomical images.",
     )
     parser.add_argument(
@@ -310,7 +310,25 @@ def main():
     )
 
     args = parser.parse_args()
-    create_mosaic_pdf(args)
+
+    if args.out_file:
+        out_file = args.out_file
+    else:
+        in_abs = os.path.abspath(args.dataset)
+        out_file = os.path.basename(in_abs) + "_mosaic.pdf"
+
+    if not args.png_in_dir:
+        create_mosaic_pdf(
+            args.dataset,
+            out_file,
+            anat=args.anat,
+            png_out_dir=args.png_out_dir,
+            downsample=args.downsample,
+            freesurfer=args.freesurfer,
+            metadata=args.metadata,
+        )
+    else:
+        create_pdf(args.png_in_dir, out_file, args.metadata)
 
 
 if __name__ == "__main__":
