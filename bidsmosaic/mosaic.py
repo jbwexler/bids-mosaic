@@ -69,14 +69,14 @@ def create_slice_img(
 
     # Remove transparent margins
     png = PIL.Image.open(out_path)
-    png_cropped = png.crop(png.getbbox())
+    new_png = png.crop(png.getbbox())
 
     if downsample:
-        factor_per_dim = np.sqrt(downsample)
-        height, width = png_cropped.size
-        new_size = (round(height / factor_per_dim), round(width / factor_per_dim))
-        png_cropped_resized = png_cropped.resize(new_size)
-        png_cropped_resized.save(out_path)
+        height, width = new_png.size
+        new_size = (round(height / downsample), round(width / downsample))
+        new_png = new_png.resize(new_size)
+
+    new_png.save(out_path)
 
 
 def create_sized_img(img_path: str, new_height: int) -> Image:
