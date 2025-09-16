@@ -41,6 +41,7 @@ def create_slice_img(
     cut_coords=np.array([0]),
     colorbar=False,
     ds_root=None,
+    downsample=None,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice."""
@@ -69,7 +70,13 @@ def create_slice_img(
     # Remove transparent margins
     png = PIL.Image.open(out_path)
     png_cropped = png.crop(png.getbbox())
-    png_cropped.save(out_path)
+
+    if downsample:
+        factor_per_dim = np.sqrt(downsample)
+        height, width = png_cropped.size
+        new_size = (round(height / factor_per_dim), round(width / factor_per_dim))
+        png_cropped_resized = png_cropped.resize(new_size)
+        png_cropped_resized.save(out_path)
 
 
 def create_sized_img(img_path: str, new_height: int) -> Image:
@@ -205,7 +212,7 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     pdf.build(flowables)
 
 
-def create_anat_images(layout: BIDSLayout, png_dir: str) -> None:
+def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> None:
     """Creates anatomical mosaic .png files."""
     anat_layout_kwargs = {
         "datatype": "anat",
@@ -217,16 +224,18 @@ def create_anat_images(layout: BIDSLayout, png_dir: str) -> None:
     os.makedirs(anat_png_dir, exist_ok=True)
 
     for file in files:
-        create_slice_img(file.path, anat_png_dir, layout.root)
+        create_slice_img(file.path, anat_png_dir, layout.root, downsample=downsample)
 
 
-def create_fs_images(fs_dir: str, png_dir: str) -> None:
+def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
     """Creates freesurfer mosaic .png files."""
     fs_png_dir = os.path.join(png_dir, "Freesurfer")
     os.makedirs(fs_png_dir, exist_ok=True)
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
-        create_slice_img(file_path, fs_png_dir, fs_dir, ds_root=fs_dir)
+        create_slice_img(
+            file_path, fs_png_dir, fs_dir, ds_root=fs_dir, downsample=downsample
+        )
 
 
 def create_mosaic_pdf(args: argparse.Namespace) -> None:
@@ -247,9 +256,9 @@ def create_mosaic_pdf(args: argparse.Namespace) -> None:
         layout = BIDSLayout(args.dataset, validate=False)
 
         if args.anat:
-            create_anat_images(layout, png_dir)
+            create_anat_images(layout, png_dir, downsample=args.downsample)
         if args.freesurfer:
-            create_fs_images(args.freesurfer, png_dir)
+            create_fs_images(args.freesurfer, png_dir, downsample=args.downsample)
 
         create_pdf(png_dir, out_file, args.metadata)
 
@@ -293,6 +302,11 @@ def main():
         "--freesurfer",
         type=str,
         help="Path to freesurfer data.",
+    )
+    parser.add_argument(
+        "--downsample",
+        type=int,
+        help="Factor by which to downsample images.",
     )
 
     args = parser.parse_args()
