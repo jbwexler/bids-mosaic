@@ -5,11 +5,22 @@ import glob
 import tempfile
 import json
 import logging
+import PIL.Image
 from bids import BIDSLayout
 from nilearn.plotting import plot_img
+import matplotlib.pyplot as plt
 import nibabel as nb
-from fpdf import FPDF
-from PIL import Image, ImageDraw, ImageFont
+from reportlab.platypus import (
+    Paragraph,
+    Image,
+    Table,
+    SimpleDocTemplate,
+    PageBreak,
+    TableStyle,
+    Spacer,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 
 def add_margin_below(pil_img: Image, margin_size: int):
@@ -29,6 +40,7 @@ def create_slice_img(
     display_mode="x",
     cut_coords=np.array([0]),
     colorbar=False,
+    ds_root=None,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice."""
@@ -37,116 +49,161 @@ def create_slice_img(
     except FileNotFoundError:
         logging.error("%s was not found." % img_path)
         return
-    
-    out_file = os.path.relpath(img_path, ds_path) 
-    out_file = out_file.replace("/", ":") + ".png"
+
+    if ds_root:
+        relpath = os.path.relpath(img_path, ds_path)
+        out_file = relpath.replace("/", ":") + ".png"
+    else:
+        out_file = os.path.basename(img_path) + ".png"
+
     out_path = os.path.join(out_dir, out_file)
 
     plot_img(
         img,
-        output_file=out_path,
         display_mode=display_mode,
         cut_coords=cut_coords,
         colorbar=colorbar,
     )
+    plt.savefig(out_path, transparent=True)
 
-    return out_path
-
-
-def wrap_text(text: str, font: ImageFont, max_width: int, draw: ImageDraw):
-    """Wraps text to fit within the max_width."""
-    chars = list(text)
-    lines = []
-    current_line = []
-
-    for char in chars:
-        test_line = "".join(current_line + [char])
-        width = draw.textlength(test_line, font=font)
-        if width <= max_width:
-            current_line.append(char)
-        else:
-            lines.append("".join(current_line))
-            current_line = [char]
-
-    if current_line:
-        lines.append("".join(current_line))
-
-    return lines
+    # Remove transparent margins
+    png = PIL.Image.open(out_path)
+    png_cropped = png.crop(png.getbbox())
+    png_cropped.save(out_path)
 
 
-def add_image_text(img_path: str, text: str) -> None:
-    """Adds text below an image."""
-    img = Image.open(img_path)
-    draw = ImageDraw.Draw(img)
-
-    font_size = 18
-    padding = 4
-    line_height = font_size + padding
-    font = ImageFont.load_default(size=font_size)
+def create_sized_img(img_path: str, new_height: int) -> Image:
+    """Creates a reportlab Image from a .png. Resizes using new_height
+    and calculating new_width to maintain aspect ratio."""
+    img = PIL.Image.open(img_path)
     width, height = img.size
-
-    text_lines = wrap_text(text, font, width, draw)
-    for line in text_lines:
-        img = add_margin_below(img, line_height)
-        draw = ImageDraw.Draw(img)
-        width, height = img.size
-        draw.text(
-            (width / 2, height - line_height),
-            line,
-            font=font,
-            anchor="ma",
-            fill="black",
-        )
-
-    img = add_margin_below(img, 4)
-    img.save(img_path, "PNG")
+    new_width = (new_height / height) * width
+    return Image(img_path, height=new_height, width=new_width)
 
 
-def add_new_section(pdf: FPDF, title: str) -> None:
-    """Creates a new pdf page with a title."""
-    pdf.add_page()
-    pdf.set_font("Helvetica", size=32, style="B")
-    pdf.cell(0, 10, title, align="C")
-    pdf.ln(20)
+def create_filename_caption(img_path: str) -> Paragraph:
+    """Creates a reportlab Paragraph containing the filename of the image."""
+    caption_text = os.path.basename(img_path)
+    caption_text = caption_text.replace(":", "/")
+    caption_text = os.path.relpath(caption_text)
+    caption_text = caption_text.removesuffix(".png")
+    return caption_text
 
-def add_mosaic_table(pdf: FPDF, img_dir_path: str) -> None:
+
+def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     """Adds mosaic table to pdf."""
-    num_col = 6
-    image_list = sorted(glob.glob(img_dir_path + "/*"))
+    page_width
+    img_height = 80
+
+    caption_style = ParagraphStyle(
+        "Caption",
+        parent=styles["Normal"],
+        fontSize=6,
+        leading=6,
+        textColor=colors.black,
+        alignment="CENTER",
+        leftIndent=0,
+        rightIndent=0,
+        spaceAfter=0,
+        spaceBefore=0,
+    )
+
+    image_path_list = sorted(glob.glob(img_dir_path + "/*"))
+    image_tup_list = [
+        [
+            create_sized_img(img_path, img_height),
+            Paragraph(
+                f"<para align=center spaceb=3>{create_filename_caption(img_path)}</para>",
+                caption_style,
+            ),
+        ]
+        for img_path in image_path_list
+    ]
+    img_width = image_tup_list[0][0]._width
+    num_col = int(page_width / img_width)
+    col_width = int(page_width / num_col)
+
     image_table_list = [
-        image_list[i : i + num_col] for i in range(0, len(image_list), num_col)
+        image_tup_list[i : i + num_col] for i in range(0, len(image_path_list), num_col)
     ]
 
-    with pdf.table() as table:
-        for i, img_row in enumerate(image_table_list):
-            row = table.row()
-            for j, img in enumerate(img_row):
-                row.cell(img=img)
+    table_style = TableStyle(
+        [
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BOX", (0, 0), (-1, -1), 0.25, colors.black),
+        ]
+    )
+    table = Table(image_table_list, colWidths=col_width)
+    table.setStyle(table_style)
 
-    
+    return table
+
+
+def create_metadata_table(metadata: str) -> Table:
+    """Creates a table containing user-inputted metadata."""
+    metadata_dict = json.loads(metadata)
+    metadata_list = list(metadata_dict.items())
+
+    table_style = TableStyle(
+        [
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("BOX", (0, 0), (-1, -1), 0.25, colors.black),
+        ]
+    )
+
+    table = Table(metadata_list)
+    table.setStyle(table_style)
+
+    return table
+
 
 def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     """Creates a pdf containing images aligned in a grid"""
-    pdf = FPDF()
+    styles = getSampleStyleSheet()
+    pdf = SimpleDocTemplate(
+        out_path,
+        leftMargin=18,
+        rightMargin=18,
+        topMargin=36,
+        bottomMargin=36,
+    )
+    page_width = int(pdf.width)
 
-    for dir in glob.glob(os.path.join(img_dir_path, "*")):
-        title = os.path.basename(dir) + " Images"
-        add_new_section(pdf, title)
-        add_mosaic_table(pdf, dir)
+    flowables = []
+
+    for d in glob.glob(os.path.join(img_dir_path, "*")):
+        title_text = os.path.basename(d) + " Images"
+        title = Paragraph(title_text, styles["Title"])
+        flowables.append(title)
+        flowables.append(Spacer(0, 15))
+
+        mosaic_table = create_mosaic_table(d, page_width, styles)
+        flowables.append(mosaic_table)
+
+        flowables.append(PageBreak())
 
     if metadata:
-        add_new_section(pdf, "Metadata")
+        title = Paragraph("Metadata", styles["Title"])
+        flowables.append(title)
+        flowables.append(Spacer(0, 15))
 
-        pdf.set_font("Helvetica", size=12)
-        meta_dict = json.loads(metadata)
+        metadata_table = create_metadata_table(metadata)
+        flowables.append(metadata_table)
 
-        with pdf.table(first_row_as_headings=False) as table:
-            for k, v in meta_dict.items():
-                row = table.row()
-                row.cell(text=k)
-                row.cell(text=v)
+    pdf.build(flowables)
 
-    pdf.output(out_path)
 
 def create_anat_images(layout: BIDSLayout, png_dir: str) -> None:
     """Creates anatomical mosaic .png files."""
@@ -157,23 +214,22 @@ def create_anat_images(layout: BIDSLayout, png_dir: str) -> None:
 
     files = layout.get(**anat_layout_kwargs)
     anat_png_dir = os.path.join(png_dir, "Anatomical")
+    os.makedirs(anat_png_dir, exist_ok=True)
+
     for file in files:
-        png_path = create_slice_img(file.path, anat_png_dir, layout.root)
-        if png_path:
-            add_image_text(png_path, file.filename)
+        create_slice_img(file.path, anat_png_dir, layout.root)
 
 
 def create_fs_images(fs_dir: str, png_dir: str) -> None:
     """Creates freesurfer mosaic .png files."""
     fs_png_dir = os.path.join(png_dir, "Freesurfer")
+    os.makedirs(fs_png_dir, exist_ok=True)
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
-        png_path = create_slice_img(file_path, fs_png_dir, fs_dir)
-        if png_path:
-            add_image_text(png_path, os.path.relpath(file_path, fs_dir))
+        create_slice_img(file_path, fs_png_dir, fs_dir, ds_root=fs_dir)
 
 
-def create_mosaic(args: argparse.Namespace) -> None:
+def create_mosaic_pdf(args: argparse.Namespace) -> None:
     """Creates a mosaic pdf."""
     if args.out_file:
         out_file = args.out_file
@@ -189,14 +245,14 @@ def create_mosaic(args: argparse.Namespace) -> None:
             png_dir = temp_dir_obj.name
 
         layout = BIDSLayout(args.dataset, validate=False)
-        
+
         if args.anat:
             create_anat_images(layout, png_dir)
         if args.freesurfer:
             create_fs_images(args.freesurfer, png_dir)
 
         create_pdf(png_dir, out_file, args.metadata)
-        
+
         if not args.png_out_dir:
             temp_dir_obj.cleanup()
     else:
@@ -240,7 +296,7 @@ def main():
     )
 
     args = parser.parse_args()
-    create_mosaic(args)
+    create_mosaic_pdf(args)
 
 
 if __name__ == "__main__":

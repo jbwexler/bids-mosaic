@@ -10,8 +10,9 @@ dependencies = [
     "pybids",
     "nilearn",
     "nibabel",
-    "fpdf2",
-    "pillow"
+    "reportlab",
+    "pillow",
+    "matplotlib"
 ]
 
 [project.scripts]
