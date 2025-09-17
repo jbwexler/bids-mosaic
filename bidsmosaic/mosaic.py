@@ -33,6 +33,18 @@ def add_margin_below(pil_img: Image, margin_size: int):
     return result
 
 
+def enhance_brightness(
+    img: PIL.Image, target_brightness=100, threshold=10
+) -> PIL.Image:
+    """Attempts to change the brightness of an image to the target brightness."""
+    arr = np.array(img, dtype="float32")
+    mask = arr > threshold
+    rms = np.sqrt(np.mean(np.square(arr[mask])))
+    brightness_factor = target_brightness / rms
+    arr[mask] *= brightness_factor
+    return PIL.Image.fromarray(arr).convert("L")
+
+
 def create_slice_img(
     img_path: str,
     out_dir: str,
@@ -64,17 +76,21 @@ def create_slice_img(
         display_mode=display_mode,
         cut_coords=cut_coords,
         colorbar=colorbar,
+        annotate=False,
     )
     plt.savefig(out_path, transparent=True)
 
     # Remove transparent margins
     png = PIL.Image.open(out_path)
-    new_png = png.crop(png.getbbox())
+    new_png = png.crop(png.getbbox()).convert("L")
 
+    # Downsample
     if downsample:
         height, width = new_png.size
         new_size = (round(height / downsample), round(width / downsample))
         new_png = new_png.resize(new_size)
+
+    new_png = enhance_brightness(new_png)
 
     new_png.save(out_path)
 
