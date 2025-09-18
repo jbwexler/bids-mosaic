@@ -32,5 +32,7 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
+        git config --global user.name "${GITHUB_ACTOR}"
+        git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
         datalad install --get-data https://github.com/OpenNeuroDatasets/ds004131.git
         TEST_DATASET=ds004131 pytest
