@@ -23,16 +23,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 
-def add_margin_below(pil_img: Image, margin_size: int):
-    """Adds white margin below a pillow image"""
-    width, height = pil_img.size
-    new_height = height + margin_size
-    color = (255, 255, 255)
-    result = Image.new(pil_img.mode, (width, new_height), color)
-    result.paste(pil_img, (0, 0))
-    return result
-
-
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
 ) -> PIL.Image:
@@ -60,7 +50,7 @@ def create_slice_img(
     try:
         img = nb.load(img_path)
     except FileNotFoundError:
-        logging.error("%s was not found." % img_path)
+        logging.warning("%s was not found." % img_path)
         return
 
     if ds_root:
@@ -79,12 +69,12 @@ def create_slice_img(
         annotate=False,
     )
     plt.savefig(out_path, transparent=True)
+    plt.close()
 
     # Remove transparent margins
     png = PIL.Image.open(out_path)
     new_png = png.crop(png.getbbox()).convert("L")
 
-    # Downsample
     if downsample:
         height, width = new_png.size
         new_size = (round(height / downsample), round(width / downsample))
@@ -114,10 +104,8 @@ def create_filename_caption(img_path: str) -> Paragraph:
 
 
 def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
-    """Adds mosaic table to pdf."""
-    page_width
+    """Creates reportlab Table of slice images with image-name captions."""
     img_height = 80
-
     caption_style = ParagraphStyle(
         "Caption",
         parent=styles["Normal"],
@@ -132,7 +120,12 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     )
 
     image_path_list = sorted(glob.glob(img_dir_path + "/*"))
-    image_tup_list = [
+
+    if not image_path_list:
+        logging.error(f"No images found in {img_dir_path}")
+        return
+
+    table_data = [
         [
             create_sized_img(img_path, img_height),
             Paragraph(
@@ -142,12 +135,12 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         ]
         for img_path in image_path_list
     ]
-    img_width = image_tup_list[0][0]._width
+    img_width = table_data[0][0]._width
     num_col = int(page_width / img_width)
     col_width = int(page_width / num_col)
 
-    image_table_list = [
-        image_tup_list[i : i + num_col] for i in range(0, len(image_path_list), num_col)
+    table_data_rows = [
+        table_data[i : i + num_col] for i in range(0, len(image_path_list), num_col)
     ]
 
     table_style = TableStyle(
@@ -162,14 +155,14 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
             ("BOX", (0, 0), (-1, -1), 0.25, colors.black),
         ]
     )
-    table = Table(image_table_list, colWidths=col_width)
+    table = Table(table_data_rows, colWidths=col_width)
     table.setStyle(table_style)
 
     return table
 
 
 def create_metadata_table(metadata: str) -> Table:
-    """Creates a table containing user-inputted metadata."""
+    """Creates a reportlab Table containing user-inputted metadata."""
     metadata_dict = json.loads(metadata)
     metadata_list = list(metadata_dict.items())
 
@@ -256,7 +249,7 @@ def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
 
 def create_mosaic_pdf(
     dataset: str,
-    out_file,
+    out_file: str,
     anat=True,
     png_out_dir=None,
     downsample=None,
