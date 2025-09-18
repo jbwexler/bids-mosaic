@@ -312,7 +312,7 @@ def main():
         "--no-anat",
         action="store_false",
         dest="anat",
-        help="Include mosaic of all anatomical images.",
+        help="Do not include anatomical images.",
     )
     parser.add_argument(
         "--freesurfer",
