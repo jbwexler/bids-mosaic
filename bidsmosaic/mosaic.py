@@ -287,7 +287,7 @@ def create_mosaic_pdf(
 
 
 def main():
-    logger.setLevel(logging.INFO)
+    logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", type=str, help="Path to dataset")
@@ -339,7 +339,6 @@ def main():
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
-
 
     if args.out_file:
         out_file = args.out_file
