@@ -23,6 +23,9 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 
+logger = logging.getLogger(__name__)
+
+
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
 ) -> PIL.Image:
@@ -47,10 +50,12 @@ def create_slice_img(
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice."""
+
+    logger.debug(f"Creating png from {img_path}")
     try:
         img = nb.load(img_path)
     except FileNotFoundError:
-        logging.warning("%s was not found." % img_path)
+        logger.warning("%s was not found." % img_path)
         return
 
     if ds_root:
@@ -122,7 +127,7 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     image_path_list = sorted(glob.glob(img_dir_path + "/*"))
 
     if not image_path_list:
-        logging.error(f"No images found in {img_dir_path}")
+        logger.error(f"No images found in {img_dir_path}")
         return
 
     table_data = [
@@ -220,6 +225,8 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
 
     pdf.build(flowables)
 
+    logger.info("Successfully created pdf")
+
 
 def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> None:
     """Creates anatomical mosaic .png files."""
@@ -266,10 +273,13 @@ def create_mosaic_pdf(
     layout = BIDSLayout(dataset, validate=False)
 
     if anat:
+        logger.info(f"Creating anat images in {png_dir}")
         create_anat_images(layout, png_dir, downsample=downsample)
     if freesurfer:
+        logger.info(f"Creating freesurfer images in {png_dir}")
         create_fs_images(freesurfer, png_dir, downsample=downsample)
 
+    logger.info(f"Creating pdf at {out_file}")
     create_pdf(png_dir, out_file, metadata)
 
     if not png_out_dir:
@@ -277,6 +287,8 @@ def create_mosaic_pdf(
 
 
 def main():
+    logger.setLevel(logging.INFO)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", type=str, help="Path to dataset")
     parser.add_argument(
@@ -317,8 +329,17 @@ def main():
         type=int,
         help="Factor by which to downsample images.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Set logging level to DEBUG.",
+    )
 
     args = parser.parse_args()
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
 
     if args.out_file:
         out_file = args.out_file
@@ -337,6 +358,7 @@ def main():
             metadata=args.metadata,
         )
     else:
+        logger.info(f"Creating pdf at {out_file}")
         create_pdf(args.png_in_dir, out_file, args.metadata)
 
 
