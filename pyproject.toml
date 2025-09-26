@@ -4,6 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bidsmosaic"
+description = "A BIDS tool for creating PDFs containing slices of nifti images"
+readme = "README.md"
+license = "MIT"
+authors = [
+  { name = "Joseph Wexler", email = "jbwexler@stanford.edu" },
+]
 version = "0.0.1"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,6 +21,9 @@ dependencies = [
     "pillow>=9.3.0",
     "matplotlib>=3.7.0"
 ]
+
+[project.urls]
+Source = "https://github.com/jbwexler/bids-mosaic"
 
 [project.scripts]
 bids-mosaic = "bidsmosaic.mosaic:main"
