@@ -152,9 +152,9 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         [
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("BOX", (0, 0), (-1, -1), 0.25, colors.black),
