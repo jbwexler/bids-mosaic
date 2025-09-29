@@ -33,3 +33,6 @@ Source = "https://github.com/jbwexler/bids-mosaic"
 
 [project.scripts]
 bids-mosaic = "bidsmosaic.mosaic:main"
+
+[tool.setuptools]
+packages = ["bidsmosaic"]
