@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bidsmosaic"
+name = "bids-mosaic"
 description = "A BIDS tool for creating PDFs containing slices of nifti images"
 readme = "README.md"
 license = "MIT"

@@ -3,12 +3,12 @@ A BIDS tool for creating PDFs containing slices of nifti images
 
 ## Installation
 ```
-pip install bidsmosaic
+pip install bids-mosaic
 ```
 
 ## Usage
 ```
-bids-mosiac <bids_dataset_directory>
+bids-mosaic <bids_dataset_directory>
 ```
 
 For more options:
