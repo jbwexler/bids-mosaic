@@ -8,6 +8,7 @@ import logging
 import PIL.Image
 from bids import BIDSLayout
 from nilearn.plotting import plot_img
+from nilearn._utils.exceptions import DimensionError
 import matplotlib.pyplot as plt
 import nibabel as nb
 from reportlab.platypus import (
@@ -55,7 +56,7 @@ def create_slice_img(
     try:
         img = nb.load(img_path)
     except FileNotFoundError:
-        logger.warning("%s was not found." % img_path)
+        logger.warning("Skipping %s because file was not found." % img_path)
         return
 
     if ds_root:
@@ -66,13 +67,18 @@ def create_slice_img(
 
     out_path = os.path.join(out_dir, out_file)
 
-    plot_img(
-        img,
-        display_mode=display_mode,
-        cut_coords=cut_coords,
-        colorbar=colorbar,
-        annotate=False,
-    )
+    try:
+        plot_img(
+            img,
+            display_mode=display_mode,
+            cut_coords=cut_coords,
+            colorbar=colorbar,
+            annotate=False,
+        )
+    except (EOFError, DimensionError, np._core._exceptions._ArrayMemoryError):
+        logger.warning("Skipping %s due to the following error: e" % img_path)
+        return
+
     plt.savefig(out_path, transparent=True)
     plt.close()
 
