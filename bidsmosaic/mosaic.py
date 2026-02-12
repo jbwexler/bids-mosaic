@@ -8,7 +8,6 @@ import logging
 import PIL.Image
 from bids import BIDSLayout
 from nilearn.plotting import plot_img
-from nilearn._utils.exceptions import DimensionError
 import matplotlib.pyplot as plt
 import nibabel as nb
 from reportlab.platypus import (
@@ -67,19 +66,27 @@ def create_slice_img(
 
     out_path = os.path.join(out_dir, out_file)
 
-    try:
-        plot_img(
-            img,
-            display_mode=display_mode,
-            cut_coords=cut_coords,
-            colorbar=colorbar,
-            annotate=False,
-        )
-    except (EOFError, DimensionError, np._core._exceptions._ArrayMemoryError):
-        logger.warning("Skipping %s due to the following error: e" % img_path)
-        return
+    if len(img.shape) == 3:
+        try:
+            plot_img(
+                img,
+                display_mode=display_mode,
+                cut_coords=cut_coords,
+                colorbar=colorbar,
+                annotate=False,
+            )
+        except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
+            logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
+            return
+          
+        plt.savefig(out_path, transparent=True)
+    elif len(img.shape) == 2:
+        logger.warning("%s is a 2D image." % img_path)
+        img_data = img.get_fdata()
+        img_data = np.flipud(img_data.T)
 
-    plt.savefig(out_path, transparent=True)
+        out_path = out_path.replace(".png", "_2D.png")
+        plt.imsave(out_path, img_data, cmap="gray")
     plt.close()
 
     # Remove transparent margins
@@ -111,6 +118,10 @@ def create_filename_caption(img_path: str) -> Paragraph:
     caption_text = caption_text.replace(":", "/")
     caption_text = os.path.relpath(caption_text)
     caption_text = caption_text.removesuffix(".png")
+    if caption_text.endswith("_2D"):
+        caption_text = caption_text.removesuffix("_2D")
+        caption_text += " (2D)"
+
     return caption_text
 
 
@@ -369,3 +380,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
