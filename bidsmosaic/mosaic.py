@@ -76,8 +76,8 @@ def create_slice_img(
                 colorbar=colorbar,
                 annotate=False,
             )
-        except (EOFError, np._core._exceptions._ArrayMemoryError):
-            logger.warning("Skipping %s due to the following error: e" % img_path)
+        except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
+            logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
             return
           
         plt.savefig(out_path, transparent=True)
@@ -88,9 +88,6 @@ def create_slice_img(
 
         out_path = out_path.replace(".png", "_2D.png")
         plt.imsave(out_path, img_data, cmap="gray")
- 
-
-    plt.savefig(out_path, transparent=True)
     plt.close()
 
     # Remove transparent margins
