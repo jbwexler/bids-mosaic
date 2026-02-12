@@ -8,7 +8,6 @@ import logging
 import PIL.Image
 from bids import BIDSLayout
 from nilearn.plotting import plot_img
-from nilearn._utils.exceptions import DimensionError
 import matplotlib.pyplot as plt
 import nibabel as nb
 from reportlab.platypus import (
