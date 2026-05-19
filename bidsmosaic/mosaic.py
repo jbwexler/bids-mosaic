@@ -1,6 +1,7 @@
 import numpy as np
 import argparse
 import os.path
+import sys
 import glob
 import tempfile
 import json
@@ -80,6 +81,7 @@ def create_slice_img(
             )
         except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
             logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
+            plt.close()
             return
 
         plt.savefig(out_path, transparent=True)
@@ -107,8 +109,8 @@ def create_slice_img(
 
 
 def create_sized_img(img_path: str) -> Image:
-    """Creates a reportlab Image from a .png. Resizes using new_height
-    and calculating new_width to maintain aspect ratio."""
+    """Creates a reportlab Image from a .png, scaled to fit within
+    MAX_IMG_HEIGHT x MAX_IMG_WIDTH while maintaining aspect ratio."""
     img = PIL.Image.open(img_path)
     width, height = img.size
 
@@ -126,8 +128,8 @@ def create_sized_img(img_path: str) -> Image:
     return Image(img_path, height=new_height, width=new_width)
 
 
-def create_filename_caption(img_path: str) -> Paragraph:
-    """Creates a reportlab Paragraph containing the filename of the image."""
+def create_filename_caption(img_path: str) -> str:
+    """Returns the filename of the image, formatted for use as a caption."""
     caption_text = os.path.basename(img_path)
     caption_text = caption_text.replace(":", "/")
     caption_text = os.path.relpath(caption_text)
@@ -158,7 +160,7 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
 
     if not image_path_list:
         logger.error(f"No images found in {img_dir_path}")
-        return
+        sys.exit(1)
 
     table_data = [
         [
@@ -337,7 +339,7 @@ def main():
     parser.add_argument(
         "--png-out-dir",
         type=str,
-        help="Path to directory to output .png slice images too, instead of creating a temp directory.",
+        help="Path to directory to output .png slice images to, instead of creating a temp directory.",
     )
     parser.add_argument(
         "-m",
