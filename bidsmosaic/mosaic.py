@@ -25,6 +25,9 @@ from reportlab.lib import colors
 
 logger = logging.getLogger(__name__)
 
+MAX_IMG_HEIGHT = 80
+MAX_IMG_WIDTH = 80
+
 
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
@@ -78,7 +81,7 @@ def create_slice_img(
         except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
             logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
             return
-          
+
         plt.savefig(out_path, transparent=True)
     elif len(img.shape) == 2:
         logger.warning("%s is a 2D image." % img_path)
@@ -103,12 +106,23 @@ def create_slice_img(
     new_png.save(out_path)
 
 
-def create_sized_img(img_path: str, new_height: int) -> Image:
+def create_sized_img(img_path: str) -> Image:
     """Creates a reportlab Image from a .png. Resizes using new_height
     and calculating new_width to maintain aspect ratio."""
     img = PIL.Image.open(img_path)
     width, height = img.size
-    new_width = (new_height / height) * width
+
+    h_ratio = MAX_IMG_HEIGHT / height
+    w_ratio = MAX_IMG_WIDTH / width
+
+    if h_ratio >= 1 and w_ratio >= 1:
+        return Image(img_path, height=height, width=width)
+    elif h_ratio <= w_ratio:
+        new_height = MAX_IMG_HEIGHT
+        new_width = h_ratio * width
+    else:
+        new_width = MAX_IMG_WIDTH
+        new_height = w_ratio * height
     return Image(img_path, height=new_height, width=new_width)
 
 
@@ -127,7 +141,6 @@ def create_filename_caption(img_path: str) -> Paragraph:
 
 def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     """Creates reportlab Table of slice images with image-name captions."""
-    img_height = 80
     caption_style = ParagraphStyle(
         "Caption",
         parent=styles["Normal"],
@@ -149,7 +162,7 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
 
     table_data = [
         [
-            create_sized_img(img_path, img_height),
+            create_sized_img(img_path),
             Paragraph(
                 f"<para align=center spaceb=3>{create_filename_caption(img_path)}</para>",
                 caption_style,
@@ -157,8 +170,9 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         ]
         for img_path in image_path_list
     ]
-    img_width = table_data[0][0]._width
-    num_col = int(page_width / img_width)
+
+    largest_img_width = max(row[0]._width for row in table_data)
+    num_col = int(page_width / largest_img_width)
     col_width = int(page_width / num_col)
 
     table_data_rows = [
@@ -212,6 +226,7 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     styles = getSampleStyleSheet()
     pdf = SimpleDocTemplate(
         out_path,
+        pagesize=(612, 792),
         leftMargin=18,
         rightMargin=18,
         topMargin=36,
@@ -347,6 +362,16 @@ def main():
         help="Factor by which to downsample images.",
     )
     parser.add_argument(
+        "--max-img-height",
+        type=int,
+        help="Max height of images.",
+    )
+    parser.add_argument(
+        "--max-img-width",
+        type=int,
+        help="Max width of images.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Set logging level to DEBUG.",
@@ -356,6 +381,13 @@ def main():
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    if args.max_img_height:
+        global MAX_IMG_HEIGHT
+        MAX_IMG_HEIGHT = args.max_img_height
+    if args.max_img_width:
+        global MAX_IMG_WIDTH
+        MAX_IMG_WIDTH = args.max_img_width
 
     if args.out_file:
         out_file = args.out_file
@@ -380,4 +412,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

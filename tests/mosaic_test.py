@@ -5,7 +5,8 @@ import bidsmosaic.mosaic as mosaic
 
 @pytest.fixture
 def dataset():
-    return os.getenv('TEST_DATASET')
+    return os.getenv("TEST_DATASET")
+
 
 def test_run(dataset):
     metadata = '{"Dataset ID":"ds000000", "Dataset Name": "Test Dataset"}'
@@ -17,5 +18,5 @@ def test_run(dataset):
         png_out_dir=None,
         downsample=2,
         freesurfer=None,
-        metadata=metadata
+        metadata=metadata,
     )
