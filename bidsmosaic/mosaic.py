@@ -42,14 +42,26 @@ def enhance_brightness(
     return PIL.Image.fromarray(arr).convert("L")
 
 
+def unique_path(path: str) -> str:
+    """Returns path, or path with _1, _2, ... appended to the filename if it is
+    already taken, so images that share a name don't overwrite each other."""
+    if not os.path.exists(path):
+        return path
+
+    stem, ext = os.path.splitext(path)
+    count = 1
+    while os.path.exists(f"{stem}_{count}{ext}"):
+        count += 1
+    return f"{stem}_{count}{ext}"
+
+
 def create_slice_img(
     img_path: str,
     out_dir: str,
-    ds_path: str,
     display_mode="x",
     cut_coords=np.array([0]),
     colorbar=False,
-    ds_root=None,
+    ds_path=None,
     downsample=None,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
@@ -62,13 +74,16 @@ def create_slice_img(
         logger.warning("Skipping %s because file was not found." % img_path)
         return
 
-    if ds_root:
+    if ds_path:
         relpath = os.path.relpath(img_path, ds_path)
-        out_file = relpath.replace("/", ":") + ".png"
+        out_file = relpath.replace("/", ":")
     else:
-        out_file = os.path.basename(img_path) + ".png"
+        out_file = os.path.basename(img_path)
 
-    out_path = os.path.join(out_dir, out_file)
+    if len(img.shape) == 2:
+        out_file += "_2D"
+
+    out_path = unique_path(os.path.join(out_dir, out_file + ".png"))
 
     if len(img.shape) == 3:
         try:
@@ -90,8 +105,12 @@ def create_slice_img(
         img_data = img.get_fdata()
         img_data = np.flipud(img_data.T)
 
-        out_path = out_path.replace(".png", "_2D.png")
         plt.imsave(out_path, img_data, cmap="gray")
+    else:
+        logger.warning(
+            "Skipping %s because it is %dD." % (img_path, len(img.shape))
+        )
+        return
     plt.close()
 
     # Remove transparent margins
@@ -274,7 +293,7 @@ def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> Non
     os.makedirs(anat_png_dir, exist_ok=True)
 
     for file in files:
-        create_slice_img(file.path, anat_png_dir, layout.root, downsample=downsample)
+        create_slice_img(file.path, anat_png_dir, downsample=downsample)
 
 
 def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
@@ -284,7 +303,7 @@ def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
         create_slice_img(
-            file_path, fs_png_dir, fs_dir, ds_root=fs_dir, downsample=downsample
+            file_path, fs_png_dir, ds_path=fs_dir, downsample=downsample
         )
 
 

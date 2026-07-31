@@ -1,5 +1,7 @@
 import pytest
 import os
+import numpy as np
+import nibabel as nb
 import PIL.Image
 from reportlab.lib.styles import getSampleStyleSheet
 import bidsmosaic.mosaic as mosaic
@@ -14,6 +16,20 @@ def make_png(tmp_path, width, height):
     path = str(tmp_path / f"{width}x{height}.png")
     PIL.Image.new("L", (width, height)).save(path)
     return path
+
+
+def make_nifti(dir_path, name, shape=(8, 8, 8)):
+    """Writes a nifti with a gradient, so its slice isn't cropped away."""
+    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
+    path = str(dir_path / name)
+    nb.Nifti1Image(data, np.eye(4)).to_filename(path)
+    return path
+
+
+def make_out_dir(tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    return out_dir
 
 
 def test_create_sized_img_fits(tmp_path):
@@ -62,6 +78,70 @@ def test_create_mosaic_table_empty_dir(tmp_path):
     styles = getSampleStyleSheet()
     with pytest.raises(SystemExit):
         mosaic.create_mosaic_table(str(tmp_path), 576, styles)
+
+
+def test_unique_path_untaken(tmp_path):
+    path = str(tmp_path / "img.png")
+    assert mosaic.unique_path(path) == path
+
+
+def test_unique_path_taken(tmp_path):
+    (tmp_path / "img.png").touch()
+    assert mosaic.unique_path(str(tmp_path / "img.png")) == str(tmp_path / "img_1.png")
+
+
+def test_unique_path_multiple_taken(tmp_path):
+    for name in ("img.png", "img_1.png"):
+        (tmp_path / name).touch()
+    assert mosaic.unique_path(str(tmp_path / "img.png")) == str(tmp_path / "img_2.png")
+
+
+def test_create_slice_img_same_basename(tmp_path):
+    """Images that share a basename shouldn't overwrite each other."""
+    out_dir = make_out_dir(tmp_path)
+
+    for sub in ("sub-01", "sub-02"):
+        img_dir = tmp_path / sub
+        img_dir.mkdir()
+        mosaic.create_slice_img(make_nifti(img_dir, "T1w.nii.gz"), str(out_dir))
+
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "T1w.nii.gz.png",
+        "T1w.nii.gz_1.png",
+    ]
+
+
+def test_create_slice_img_ds_path(tmp_path):
+    """With ds_path, pngs are named after the path relative to it."""
+    img_dir = tmp_path / "ds" / "sub-01" / "anat"
+    img_dir.mkdir(parents=True)
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti(img_dir, "T1w.nii.gz"), str(out_dir), ds_path=str(tmp_path / "ds")
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["sub-01:anat:T1w.nii.gz.png"]
+
+
+def test_create_slice_img_2d(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti(tmp_path, "slice.nii.gz", shape=(8, 8)), str(out_dir)
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["slice.nii.gz_2D.png"]
+
+
+def test_create_slice_img_skips_4d(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)), str(out_dir)
+    )
+
+    assert list(out_dir.iterdir()) == []
 
 
 def test_run(dataset):
