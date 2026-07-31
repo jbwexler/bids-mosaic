@@ -307,6 +307,20 @@ def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
         )
 
 
+def create_dict_images(files_dict: dict, png_dir: str, downsample=None) -> None:
+    """Create mosaic .png files according to dictionary. Keys should be strings
+    of name of datatype (eg "Anatomical") and values should be a list of paths to nifti image files."""
+
+    for dtype, file_list in files_dict.items():
+        dtype_png_dir = os.path.join(png_dir, dtype)
+        os.makedirs(dtype_png_dir, exist_ok=True)
+
+        for file in file_list:
+            create_slice_img(
+                file, dtype_png_dir, downsample=downsample
+            )
+
+
 def create_mosaic_pdf(
     dataset: str,
     out_file: str,
@@ -315,6 +329,7 @@ def create_mosaic_pdf(
     downsample=None,
     freesurfer=None,
     metadata=None,
+    files_dict=None,
 ) -> None:
     """Creates a mosaic pdf."""
     if png_out_dir:
@@ -323,14 +338,18 @@ def create_mosaic_pdf(
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
 
-    layout = BIDSLayout(dataset, validate=False)
+    if files_dict is not None:
+        logger.info(f"Creating images from files_dict in {png_dir}")
+        create_dict_images(files_dict, png_dir, downsample=downsample)
+    else:
+        layout = BIDSLayout(dataset, validate=False)
 
-    if anat:
-        logger.info(f"Creating anat images in {png_dir}")
-        create_anat_images(layout, png_dir, downsample=downsample)
-    if freesurfer:
-        logger.info(f"Creating freesurfer images in {png_dir}")
-        create_fs_images(freesurfer, png_dir, downsample=downsample)
+        if anat:
+            logger.info(f"Creating anat images in {png_dir}")
+            create_anat_images(layout, png_dir, downsample=downsample)
+        if freesurfer:
+            logger.info(f"Creating freesurfer images in {png_dir}")
+            create_fs_images(freesurfer, png_dir, downsample=downsample)
 
     logger.info(f"Creating pdf at {out_file}")
     create_pdf(png_dir, out_file, metadata)
@@ -343,7 +362,11 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", type=str, help="Path to dataset")
+    parser.add_argument(
+        "dataset",
+        type=str,
+        nargs="?",
+        help="Path to dataset")
     parser.add_argument(
         "-o",
         "--out-file",
@@ -378,6 +401,12 @@ def main():
         help="Path to freesurfer data.",
     )
     parser.add_argument(
+        "--json-input",
+        type=str,
+        help="Path to json file containing keys of datatypes (eg Anatomical) and values"
+        "of lists of paths to image files."
+    )
+    parser.add_argument(
         "--downsample",
         type=int,
         help="Factor by which to downsample images.",
@@ -403,6 +432,26 @@ def main():
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
+    if args.json_input:
+        try:
+            with open(args.json_input, "r") as file:
+                files_dict = json.load(file)
+        except (OSError, json.JSONDecodeError) as e:
+            parser.error(f"could not read --json-input: {e}")
+
+        if not isinstance(files_dict, dict) or not all(
+            isinstance(file_list, list) for file_list in files_dict.values()
+        ):
+            parser.error(
+                "--json-input must map datatype names to lists of image paths"
+            )
+        if not files_dict:
+            parser.error(f"{args.json_input} contains no datatypes")
+    elif not args.dataset:
+        parser.error("dataset required unless --json-input present")
+    else:
+        files_dict = None
+
     if args.max_img_height:
         global MAX_IMG_HEIGHT
         MAX_IMG_HEIGHT = args.max_img_height
@@ -413,7 +462,11 @@ def main():
     if args.out_file:
         out_file = args.out_file
     else:
-        in_abs = os.path.abspath(args.dataset)
+        if args.dataset:
+            in_abs = os.path.abspath(args.dataset)
+        else:
+            in_abs = os.path.abspath(args.json_input)
+            in_abs = os.path.splitext(in_abs)[0]
         out_file = os.path.basename(in_abs) + "_mosaic.pdf"
 
     if not args.png_in_dir:
@@ -425,6 +478,7 @@ def main():
             downsample=args.downsample,
             freesurfer=args.freesurfer,
             metadata=args.metadata,
+            files_dict=files_dict,
         )
     else:
         logger.info(f"Creating pdf at {out_file}")

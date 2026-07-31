@@ -1,5 +1,7 @@
 import pytest
 import os
+import sys
+import json
 import numpy as np
 import nibabel as nb
 import PIL.Image
@@ -30,6 +32,22 @@ def make_out_dir(tmp_path):
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     return out_dir
+
+
+def write_json(tmp_path, contents, name="images.json"):
+    path = tmp_path / name
+    if isinstance(contents, str):
+        path.write_text(contents)
+    else:
+        path.write_text(json.dumps(contents))
+    return str(path)
+
+
+def run_main(monkeypatch, tmp_path, *args):
+    """Runs main() as if from the command line, with tmp_path as the cwd."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["bids-mosaic", *args])
+    mosaic.main()
 
 
 def test_create_sized_img_fits(tmp_path):
@@ -142,6 +160,58 @@ def test_create_slice_img_skips_4d(tmp_path):
     )
 
     assert list(out_dir.iterdir()) == []
+
+
+def test_main_json_input(monkeypatch, tmp_path):
+    """The pdf is named after the json file when no dataset is given."""
+    json_path = write_json(
+        tmp_path, {"Anatomical": [make_nifti(tmp_path, "T1w.nii.gz")]}
+    )
+
+    run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+    assert (tmp_path / "images_mosaic.pdf").exists()
+
+
+def test_main_json_input_malformed(monkeypatch, tmp_path):
+    json_path = write_json(tmp_path, "{not json")
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+
+def test_main_json_input_not_a_mapping(monkeypatch, tmp_path):
+    json_path = write_json(tmp_path, ["T1w.nii.gz"])
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+
+def test_main_json_input_values_not_lists(monkeypatch, tmp_path):
+    json_path = write_json(tmp_path, {"Anatomical": "T1w.nii.gz"})
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+
+def test_main_json_input_empty(monkeypatch, tmp_path):
+    json_path = write_json(tmp_path, {})
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+
+def test_main_requires_dataset_or_json_input(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path)
+
+
+def test_main_missing_images_reports_error(monkeypatch, tmp_path):
+    """A json of paths that don't exist is an error, not an empty pdf."""
+    json_path = write_json(tmp_path, {"Anatomical": [str(tmp_path / "nope.nii.gz")]})
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path)
 
 
 def test_run(dataset):
