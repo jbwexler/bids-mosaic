@@ -30,6 +30,12 @@ MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
 
 
+class MosaicError(Exception):
+    """Raised when a mosaic can't be created. The command line interface
+    reports these as errors; callers using bidsmosaic as a library are left to
+    handle them."""
+
+
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
 ) -> PIL.Image:
@@ -178,8 +184,7 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     image_path_list = sorted(glob.glob(img_dir_path + "/*"))
 
     if not image_path_list:
-        logger.error(f"No images found in {img_dir_path}")
-        sys.exit(1)
+        raise MosaicError(f"No images found in {img_dir_path}")
 
     table_data = [
         [
@@ -257,7 +262,18 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
 
     flowables = []
 
-    for d in glob.glob(os.path.join(img_dir_path, "*")):
+    img_dirs = sorted(
+        d for d in glob.glob(os.path.join(img_dir_path, "*")) if os.path.isdir(d)
+    )
+
+    if not img_dirs:
+        raise MosaicError(
+            "No image directories found in %s. Images must be in a "
+            "subdirectory named after their datatype, eg %s."
+            % (img_dir_path, os.path.join(img_dir_path, "Anatomical"))
+        )
+
+    for d in img_dirs:
         title_text = os.path.basename(d) + " Images"
         title = Paragraph(title_text, styles["Title"])
         flowables.append(title)
@@ -334,6 +350,10 @@ def create_mosaic_pdf(
     """Creates a mosaic pdf."""
     if png_out_dir:
         png_dir = png_out_dir
+        if os.path.isdir(png_dir) and any(
+            not f.startswith(".") for f in os.listdir(png_dir)
+        ):
+            raise MosaicError("png-out-dir %s is not empty." % png_dir)
     else:
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
@@ -469,20 +489,24 @@ def main():
             in_abs = os.path.splitext(in_abs)[0]
         out_file = os.path.basename(in_abs) + "_mosaic.pdf"
 
-    if not args.png_in_dir:
-        create_mosaic_pdf(
-            args.dataset,
-            out_file,
-            anat=args.anat,
-            png_out_dir=args.png_out_dir,
-            downsample=args.downsample,
-            freesurfer=args.freesurfer,
-            metadata=args.metadata,
-            files_dict=files_dict,
-        )
-    else:
-        logger.info(f"Creating pdf at {out_file}")
-        create_pdf(args.png_in_dir, out_file, args.metadata)
+    try:
+        if not args.png_in_dir:
+            create_mosaic_pdf(
+                args.dataset,
+                out_file,
+                anat=args.anat,
+                png_out_dir=args.png_out_dir,
+                downsample=args.downsample,
+                freesurfer=args.freesurfer,
+                metadata=args.metadata,
+                files_dict=files_dict,
+            )
+        else:
+            logger.info(f"Creating pdf at {out_file}")
+            create_pdf(args.png_in_dir, out_file, args.metadata)
+    except MosaicError as e:
+        logger.error(e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

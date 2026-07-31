@@ -94,7 +94,7 @@ def test_create_filename_caption_2d():
 
 def test_create_mosaic_table_empty_dir(tmp_path):
     styles = getSampleStyleSheet()
-    with pytest.raises(SystemExit):
+    with pytest.raises(mosaic.MosaicError):
         mosaic.create_mosaic_table(str(tmp_path), 576, styles)
 
 
@@ -160,6 +160,50 @@ def test_create_slice_img_skips_4d(tmp_path):
     )
 
     assert list(out_dir.iterdir()) == []
+
+
+def test_create_mosaic_pdf_png_out_dir_not_empty(tmp_path):
+    png_dir = tmp_path / "pngs"
+    png_dir.mkdir()
+    make_png(png_dir, 10, 10)
+
+    with pytest.raises(mosaic.MosaicError, match="not empty"):
+        mosaic.create_mosaic_pdf(
+            None,
+            str(tmp_path / "out.pdf"),
+            png_out_dir=str(png_dir),
+            files_dict={"Anatomical": [make_nifti(tmp_path, "T1w.nii.gz")]},
+        )
+
+
+def test_create_mosaic_pdf_png_out_dir_hidden_file(tmp_path):
+    """Hidden files like .DS_Store don't count as contents."""
+    png_dir = tmp_path / "pngs"
+    png_dir.mkdir()
+    (png_dir / ".DS_Store").touch()
+    out_pdf = tmp_path / "out.pdf"
+
+    mosaic.create_mosaic_pdf(
+        None,
+        str(out_pdf),
+        png_out_dir=str(png_dir),
+        files_dict={"Anatomical": [make_nifti(tmp_path, "T1w.nii.gz")]},
+    )
+
+    assert out_pdf.exists()
+
+
+def test_create_pdf_no_image_dirs(tmp_path):
+    with pytest.raises(mosaic.MosaicError, match="No image directories"):
+        mosaic.create_pdf(str(tmp_path), str(tmp_path / "out.pdf"))
+
+
+def test_create_pdf_ignores_loose_files(tmp_path):
+    """Images have to be in a datatype subdirectory, not loose in the dir."""
+    make_png(tmp_path, 10, 10)
+
+    with pytest.raises(mosaic.MosaicError, match="No image directories"):
+        mosaic.create_pdf(str(tmp_path), str(tmp_path / "out.pdf"))
 
 
 def test_main_json_input(monkeypatch, tmp_path):
