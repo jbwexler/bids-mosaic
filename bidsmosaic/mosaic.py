@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
 
-# Ways an image can fail to load that mean "skip this image", not "give up"
 IMAGE_READ_ERRORS = (
     nb.filebasedimages.ImageFileError,
     nb.spatialimages.HeaderDataError,
@@ -104,8 +103,7 @@ def create_slice_img(
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice. With from_bytes, img_path is a (filename, stream) tuple and
-    the image is read from the stream instead of from disk. The filename is only
-    used to name the png, and the stream has to stay open for this call."""
+    the image is read from the stream instead of from disk."""
 
     if from_bytes:
         img_path, stream = img_path
@@ -338,10 +336,9 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     logger.info("Successfully created pdf")
 
 
-def create_anat_images(
-    layout: BIDSLayout, png_dir: str, downsample=None, strict=False
-) -> None:
-    """Creates anatomical mosaic .png files."""
+def create_anat_images(layout: BIDSLayout, png_dir: str, **slice_kwargs) -> None:
+    """Creates anatomical mosaic .png files. Extra keyword arguments are passed
+    on to create_slice_img."""
     anat_layout_kwargs = {
         "datatype": "anat",
         "extension": ["nii", "nii.gz"],
@@ -352,42 +349,30 @@ def create_anat_images(
     os.makedirs(anat_png_dir, exist_ok=True)
 
     for file in files:
-        create_slice_img(file.path, anat_png_dir, downsample=downsample, strict=strict)
+        create_slice_img(file.path, anat_png_dir, **slice_kwargs)
 
 
-def create_fs_images(fs_dir: str, png_dir: str, downsample=None, strict=False) -> None:
-    """Creates freesurfer mosaic .png files."""
+def create_fs_images(fs_dir: str, png_dir: str, **slice_kwargs) -> None:
+    """Creates freesurfer mosaic .png files. Extra keyword arguments are passed
+    on to create_slice_img."""
     fs_png_dir = os.path.join(png_dir, "Freesurfer")
     os.makedirs(fs_png_dir, exist_ok=True)
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
-        create_slice_img(
-            file_path,
-            fs_png_dir,
-            ds_path=fs_dir,
-            downsample=downsample,
-            strict=strict,
-        )
+        create_slice_img(file_path, fs_png_dir, ds_path=fs_dir, **slice_kwargs)
 
 
-def create_dict_images(
-    files_dict: dict, png_dir: str, downsample=None, from_bytes=False, strict=False
-) -> None:
+def create_dict_images(files_dict: dict, png_dir: str, **slice_kwargs) -> None:
     """Create mosaic .png files according to dictionary. Keys should be strings
-    of name of datatype (eg "Anatomical") and values should be a list of paths to nifti image files."""
+    of name of datatype (eg "Anatomical") and values should be a list of paths to
+    nifti image files. Extra keyword arguments are passed on to create_slice_img."""
 
     for dtype, file_list in files_dict.items():
         dtype_png_dir = os.path.join(png_dir, dtype)
         os.makedirs(dtype_png_dir, exist_ok=True)
 
         for file in file_list:
-            create_slice_img(
-                file,
-                dtype_png_dir,
-                downsample=downsample,
-                from_bytes=from_bytes,
-                strict=strict,
-            )
+            create_slice_img(file, dtype_png_dir, **slice_kwargs)
 
 
 def create_mosaic_pdf(
@@ -413,26 +398,24 @@ def create_mosaic_pdf(
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
 
+    slice_kwargs = {
+        "downsample": downsample,
+        "strict": strict,
+        "from_bytes": from_bytes,
+    }
+
     if files_dict is not None:
         logger.info(f"Creating images from files_dict in {png_dir}")
-        create_dict_images(
-            files_dict,
-            png_dir,
-            downsample=downsample,
-            from_bytes=from_bytes,
-            strict=strict,
-        )
+        create_dict_images(files_dict, png_dir, **slice_kwargs)
     else:
         layout = BIDSLayout(dataset, validate=False)
 
         if anat:
             logger.info(f"Creating anat images in {png_dir}")
-            create_anat_images(layout, png_dir, downsample=downsample, strict=strict)
+            create_anat_images(layout, png_dir, **slice_kwargs)
         if freesurfer:
             logger.info(f"Creating freesurfer images in {png_dir}")
-            create_fs_images(
-                freesurfer, png_dir, downsample=downsample, strict=strict
-            )
+            create_fs_images(freesurfer, png_dir, **slice_kwargs)
 
     logger.info(f"Creating pdf at {out_file}")
     create_pdf(png_dir, out_file, metadata)
