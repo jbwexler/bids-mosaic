@@ -1,7 +1,9 @@
 import pytest
 import os
+import io
 import sys
 import json
+import gzip
 import numpy as np
 import nibabel as nb
 import PIL.Image
@@ -32,6 +34,26 @@ def make_out_dir(tmp_path):
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     return out_dir
+
+
+def make_nifti_stream(name="T1w.nii.gz", shape=(8, 8, 8)):
+    """Returns a (filename, stream) tuple, as create_slice_img takes with
+    from_bytes. Gzipped when the name says so, like a real file would be."""
+    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
+    raw = nb.Nifti1Image(data, np.eye(4)).to_bytes()
+    if name.endswith(".gz"):
+        raw = gzip.compress(raw)
+    return name, io.BytesIO(raw)
+
+
+def make_mgh_stream(name="001.mgz", shape=(8, 8, 8)):
+    """Returns a (filename, stream) tuple holding a freesurfer image. .mgz is
+    gzipped on disk, .mgh isn't."""
+    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
+    raw = nb.MGHImage(data, np.eye(4)).to_bytes()
+    if name.endswith(".mgz"):
+        raw = gzip.compress(raw)
+    return name, io.BytesIO(raw)
 
 
 def write_json(tmp_path, contents, name="images.json"):
@@ -79,7 +101,9 @@ def test_create_sized_img_width_constrained(tmp_path):
 
 
 def test_create_filename_caption_normal():
-    assert mosaic.create_filename_caption("sub-01_T1w.nii.gz.png") == "sub-01_T1w.nii.gz"
+    assert (
+        mosaic.create_filename_caption("sub-01_T1w.nii.gz.png") == "sub-01_T1w.nii.gz"
+    )
 
 
 def test_create_filename_caption_colon_encoded():
@@ -162,12 +186,97 @@ def test_create_slice_img_skips_4d(tmp_path):
     assert list(out_dir.iterdir()) == []
 
 
+def test_create_slice_img_from_stream(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti_stream("sub-01_T1w.nii.gz"), str(out_dir), from_bytes=True
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.gz.png"]
+
+
+def test_create_slice_img_from_uncompressed_stream(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti_stream("sub-01_T1w.nii"), str(out_dir), from_bytes=True
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.png"]
+
+
+def test_create_slice_img_from_stream_ds_path(tmp_path):
+    """Names come from the tuple, so ds_path works the same as for files."""
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti_stream("ds/sub-01/anat/T1w.nii.gz"),
+        str(out_dir),
+        ds_path="ds",
+        from_bytes=True,
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["sub-01:anat:T1w.nii.gz.png"]
+
+
+@pytest.mark.parametrize("name", ["001.mgz", "001.mgh"])
+def test_create_slice_img_from_mgh_stream(tmp_path, name):
+    """Freesurfer images stream too, gzipped (.mgz) or not (.mgh)."""
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(make_mgh_stream(name), str(out_dir), from_bytes=True)
+
+    assert [p.name for p in out_dir.iterdir()] == [f"{name}.png"]
+
+
+def test_create_slice_img_from_stream_skips_4d(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti_stream("bold.nii.gz", shape=(8, 8, 8, 2)),
+        str(out_dir),
+        from_bytes=True,
+    )
+
+    assert list(out_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "name, data",
+    [
+        ("garbage.nii", b"nope" * 200),
+        ("empty.nii", b""),
+        ("not_gzipped.nii.gz", b"nope" * 200),
+    ],
+)
+def test_create_slice_img_from_unreadable_stream(tmp_path, name, data):
+    """An unreadable stream is skipped, like a missing file is."""
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir), from_bytes=True)
+
+    assert list(out_dir.iterdir()) == []
+
+
 def test_create_slice_img_strict_missing_file(tmp_path):
     out_dir = make_out_dir(tmp_path)
 
     with pytest.raises(mosaic.MosaicError, match="was not found"):
         mosaic.create_slice_img(
             str(tmp_path / "nope.nii.gz"), str(out_dir), strict=True
+        )
+
+
+def test_create_slice_img_strict_unreadable(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    with pytest.raises(mosaic.MosaicError, match="couldn't be read"):
+        mosaic.create_slice_img(
+            ("garbage.nii", io.BytesIO(b"nope" * 200)),
+            str(out_dir),
+            from_bytes=True,
+            strict=True,
         )
 
 
@@ -226,6 +335,25 @@ def test_main_strict_bad_image_exits(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit):
         run_main(monkeypatch, tmp_path, "--json-input", json_path, "--strict")
+
+
+def test_create_mosaic_pdf_from_streams(tmp_path):
+    """Streams go through create_mosaic_pdf the same way paths do."""
+    out_pdf = tmp_path / "out.pdf"
+
+    mosaic.create_mosaic_pdf(
+        None,
+        str(out_pdf),
+        files_dict={
+            "Anatomical": [
+                make_nifti_stream("sub-01_T1w.nii.gz"),
+                make_nifti_stream("sub-02_T1w.nii.gz"),
+            ]
+        },
+        from_bytes=True,
+    )
+
+    assert out_pdf.exists()
 
 
 def test_create_mosaic_pdf_png_out_dir_not_empty(tmp_path):
@@ -324,16 +452,19 @@ def test_main_missing_images_reports_error(monkeypatch, tmp_path):
         run_main(monkeypatch, tmp_path, "--json-input", json_path)
 
 
-def test_run(dataset):
+def test_run(dataset, tmp_path):
     assert dataset is not None, "TEST_DATASET environment variable must be set"
 
     metadata = '{"Dataset ID":"ds000000", "Dataset Name": "Test Dataset"}'
+    out_file = tmp_path / "mosaic_test.pdf"
     mosaic.create_mosaic_pdf(
         dataset,
-        "mosaic_test.pdf",
+        str(out_file),
         anat=True,
         png_out_dir=None,
         downsample=2,
         freesurfer=None,
         metadata=metadata,
     )
+
+    assert out_file.exists()

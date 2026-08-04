@@ -3,6 +3,7 @@ import argparse
 import os.path
 import sys
 import glob
+import gzip
 import tempfile
 import json
 import logging
@@ -28,6 +29,15 @@ logger = logging.getLogger(__name__)
 
 MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
+
+# Ways an image can fail to load that mean "skip this image", not "give up"
+IMAGE_READ_ERRORS = (
+    nb.filebasedimages.ImageFileError,
+    nb.spatialimages.HeaderDataError,
+    nb.wrapstruct.WrapStructError,
+    nb.freesurfer.mghformat.MGHError,
+    gzip.BadGzipFile,
+)
 
 
 class MosaicError(Exception):
@@ -70,6 +80,17 @@ def unique_path(path: str) -> str:
     return f"{stem}_{count}{ext}"
 
 
+def load_stream_img(stream, filename: str):
+    """Loads a nifti or freesurfer image from an open stream, gunzipping it if
+    the filename says to. Image data is read lazily, so the stream must stay
+    open until the image is used."""
+    if filename.endswith((".gz", ".mgz")):
+        stream = gzip.open(stream)
+    if filename.endswith((".mgz", ".mgh")):
+        return nb.MGHImage.from_stream(stream)
+    return nb.Nifti1Image.from_stream(stream)
+
+
 def create_slice_img(
     img_path: str,
     out_dir: str,
@@ -78,16 +99,28 @@ def create_slice_img(
     colorbar=False,
     ds_path=None,
     downsample=None,
+    from_bytes=False,
     strict=False,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
-    sagittal slice."""
+    sagittal slice. With from_bytes, img_path is a (filename, stream) tuple and
+    the image is read from the stream instead of from disk. The filename is only
+    used to name the png, and the stream has to stay open for this call."""
+
+    if from_bytes:
+        img_path, stream = img_path
 
     logger.debug(f"Creating png from {img_path}")
     try:
-        img = nb.load(img_path)
+        if from_bytes:
+            img = load_stream_img(stream, img_path)
+        else:
+            img = nb.load(img_path)
     except FileNotFoundError:
         skip_or_raise("%s was not found." % img_path, strict)
+        return
+    except IMAGE_READ_ERRORS as e:
+        skip_or_raise("%s couldn't be read: %s" % (img_path, e), strict)
         return
 
     if ds_path:
@@ -338,7 +371,7 @@ def create_fs_images(fs_dir: str, png_dir: str, downsample=None, strict=False) -
 
 
 def create_dict_images(
-    files_dict: dict, png_dir: str, downsample=None, strict=False
+    files_dict: dict, png_dir: str, downsample=None, from_bytes=False, strict=False
 ) -> None:
     """Create mosaic .png files according to dictionary. Keys should be strings
     of name of datatype (eg "Anatomical") and values should be a list of paths to nifti image files."""
@@ -349,7 +382,11 @@ def create_dict_images(
 
         for file in file_list:
             create_slice_img(
-                file, dtype_png_dir, downsample=downsample, strict=strict
+                file,
+                dtype_png_dir,
+                downsample=downsample,
+                from_bytes=from_bytes,
+                strict=strict,
             )
 
 
@@ -362,6 +399,7 @@ def create_mosaic_pdf(
     freesurfer=None,
     metadata=None,
     files_dict=None,
+    from_bytes=False,
     strict=False,
 ) -> None:
     """Creates a mosaic pdf."""
@@ -377,7 +415,13 @@ def create_mosaic_pdf(
 
     if files_dict is not None:
         logger.info(f"Creating images from files_dict in {png_dir}")
-        create_dict_images(files_dict, png_dir, downsample=downsample, strict=strict)
+        create_dict_images(
+            files_dict,
+            png_dir,
+            downsample=downsample,
+            from_bytes=from_bytes,
+            strict=strict,
+        )
     else:
         layout = BIDSLayout(dataset, validate=False)
 
@@ -401,11 +445,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "dataset",
-        type=str,
-        nargs="?",
-        help="Path to dataset")
+    parser.add_argument("dataset", type=str, nargs="?", help="Path to dataset")
     parser.add_argument(
         "-o",
         "--out-file",
@@ -443,7 +483,7 @@ def main():
         "--json-input",
         type=str,
         help="Path to json file containing keys of datatypes (eg Anatomical) and values"
-        "of lists of paths to image files."
+        "of lists of paths to image files.",
     )
     parser.add_argument(
         "--downsample",
@@ -487,9 +527,7 @@ def main():
         if not isinstance(files_dict, dict) or not all(
             isinstance(file_list, list) for file_list in files_dict.values()
         ):
-            parser.error(
-                "--json-input must map datatype names to lists of image paths"
-            )
+            parser.error("--json-input must map datatype names to lists of image paths")
         if not files_dict:
             parser.error(f"{args.json_input} contains no datatypes")
     elif not args.dataset:
