@@ -36,6 +36,15 @@ class MosaicError(Exception):
     handle them."""
 
 
+def skip_or_raise(message: str, strict: bool) -> None:
+    """Reports an image that can't be turned into a slice, either by warning
+    that it is being skipped or, when strict, by raising so one bad image fails
+    the whole run."""
+    if strict:
+        raise MosaicError(message)
+    logger.warning("%s Skipping." % message)
+
+
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
 ) -> PIL.Image:
@@ -69,6 +78,7 @@ def create_slice_img(
     colorbar=False,
     ds_path=None,
     downsample=None,
+    strict=False,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice."""
@@ -77,7 +87,7 @@ def create_slice_img(
     try:
         img = nb.load(img_path)
     except FileNotFoundError:
-        logger.warning("Skipping %s because file was not found." % img_path)
+        skip_or_raise("%s was not found." % img_path, strict)
         return
 
     if ds_path:
@@ -101,8 +111,8 @@ def create_slice_img(
                 annotate=False,
             )
         except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
-            logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
             plt.close()
+            skip_or_raise("%s couldn't be plotted: %s" % (img_path, e), strict)
             return
 
         plt.savefig(out_path, transparent=True)
@@ -113,9 +123,7 @@ def create_slice_img(
 
         plt.imsave(out_path, img_data, cmap="gray")
     else:
-        logger.warning(
-            "Skipping %s because it is %dD." % (img_path, len(img.shape))
-        )
+        skip_or_raise("%s is %dD." % (img_path, len(img.shape)), strict)
         return
     plt.close()
 
@@ -297,7 +305,9 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     logger.info("Successfully created pdf")
 
 
-def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> None:
+def create_anat_images(
+    layout: BIDSLayout, png_dir: str, downsample=None, strict=False
+) -> None:
     """Creates anatomical mosaic .png files."""
     anat_layout_kwargs = {
         "datatype": "anat",
@@ -309,21 +319,27 @@ def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> Non
     os.makedirs(anat_png_dir, exist_ok=True)
 
     for file in files:
-        create_slice_img(file.path, anat_png_dir, downsample=downsample)
+        create_slice_img(file.path, anat_png_dir, downsample=downsample, strict=strict)
 
 
-def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
+def create_fs_images(fs_dir: str, png_dir: str, downsample=None, strict=False) -> None:
     """Creates freesurfer mosaic .png files."""
     fs_png_dir = os.path.join(png_dir, "Freesurfer")
     os.makedirs(fs_png_dir, exist_ok=True)
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
         create_slice_img(
-            file_path, fs_png_dir, ds_path=fs_dir, downsample=downsample
+            file_path,
+            fs_png_dir,
+            ds_path=fs_dir,
+            downsample=downsample,
+            strict=strict,
         )
 
 
-def create_dict_images(files_dict: dict, png_dir: str, downsample=None) -> None:
+def create_dict_images(
+    files_dict: dict, png_dir: str, downsample=None, strict=False
+) -> None:
     """Create mosaic .png files according to dictionary. Keys should be strings
     of name of datatype (eg "Anatomical") and values should be a list of paths to nifti image files."""
 
@@ -333,7 +349,7 @@ def create_dict_images(files_dict: dict, png_dir: str, downsample=None) -> None:
 
         for file in file_list:
             create_slice_img(
-                file, dtype_png_dir, downsample=downsample
+                file, dtype_png_dir, downsample=downsample, strict=strict
             )
 
 
@@ -346,6 +362,7 @@ def create_mosaic_pdf(
     freesurfer=None,
     metadata=None,
     files_dict=None,
+    strict=False,
 ) -> None:
     """Creates a mosaic pdf."""
     if png_out_dir:
@@ -360,16 +377,18 @@ def create_mosaic_pdf(
 
     if files_dict is not None:
         logger.info(f"Creating images from files_dict in {png_dir}")
-        create_dict_images(files_dict, png_dir, downsample=downsample)
+        create_dict_images(files_dict, png_dir, downsample=downsample, strict=strict)
     else:
         layout = BIDSLayout(dataset, validate=False)
 
         if anat:
             logger.info(f"Creating anat images in {png_dir}")
-            create_anat_images(layout, png_dir, downsample=downsample)
+            create_anat_images(layout, png_dir, downsample=downsample, strict=strict)
         if freesurfer:
             logger.info(f"Creating freesurfer images in {png_dir}")
-            create_fs_images(freesurfer, png_dir, downsample=downsample)
+            create_fs_images(
+                freesurfer, png_dir, downsample=downsample, strict=strict
+            )
 
     logger.info(f"Creating pdf at {out_file}")
     create_pdf(png_dir, out_file, metadata)
@@ -442,6 +461,12 @@ def main():
         help="Max width of images.",
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit with an error if any image can't be read or plotted, instead "
+        "of warning and skipping it.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Set logging level to DEBUG.",
@@ -500,6 +525,7 @@ def main():
                 freesurfer=args.freesurfer,
                 metadata=args.metadata,
                 files_dict=files_dict,
+                strict=args.strict,
             )
         else:
             logger.info(f"Creating pdf at {out_file}")

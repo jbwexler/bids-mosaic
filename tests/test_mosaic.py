@@ -162,6 +162,72 @@ def test_create_slice_img_skips_4d(tmp_path):
     assert list(out_dir.iterdir()) == []
 
 
+def test_create_slice_img_strict_missing_file(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    with pytest.raises(mosaic.MosaicError, match="was not found"):
+        mosaic.create_slice_img(
+            str(tmp_path / "nope.nii.gz"), str(out_dir), strict=True
+        )
+
+
+def test_create_slice_img_strict_4d(tmp_path):
+    out_dir = make_out_dir(tmp_path)
+
+    with pytest.raises(mosaic.MosaicError, match="is 4D"):
+        mosaic.create_slice_img(
+            make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
+            str(out_dir),
+            strict=True,
+        )
+
+
+def test_create_slice_img_strict_ok(tmp_path):
+    """A readable image is unaffected by strict."""
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(
+        make_nifti(tmp_path, "T1w.nii.gz"), str(out_dir), strict=True
+    )
+
+    assert [p.name for p in out_dir.iterdir()] == ["T1w.nii.gz.png"]
+
+
+def test_create_mosaic_pdf_strict(tmp_path):
+    """One bad image fails the whole pdf under strict."""
+    with pytest.raises(mosaic.MosaicError):
+        mosaic.create_mosaic_pdf(
+            None,
+            str(tmp_path / "out.pdf"),
+            files_dict={
+                "Anatomical": [
+                    make_nifti(tmp_path, "T1w.nii.gz"),
+                    str(tmp_path / "nope.nii.gz"),
+                ]
+            },
+            strict=True,
+        )
+
+
+def test_main_strict_bad_image_exits(monkeypatch, tmp_path):
+    """Without strict the good image alone makes a pdf; with it, main exits."""
+    json_path = write_json(
+        tmp_path,
+        {
+            "Anatomical": [
+                make_nifti(tmp_path, "T1w.nii.gz"),
+                str(tmp_path / "nope.nii.gz"),
+            ]
+        },
+    )
+
+    run_main(monkeypatch, tmp_path, "--json-input", json_path)
+    assert (tmp_path / "images_mosaic.pdf").exists()
+
+    with pytest.raises(SystemExit):
+        run_main(monkeypatch, tmp_path, "--json-input", json_path, "--strict")
+
+
 def test_create_mosaic_pdf_png_out_dir_not_empty(tmp_path):
     png_dir = tmp_path / "pngs"
     png_dir.mkdir()
