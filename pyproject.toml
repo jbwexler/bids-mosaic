@@ -32,7 +32,7 @@ dependencies = [
 Source = "https://github.com/jbwexler/bids-mosaic"
 
 [project.scripts]
-bids-mosaic = "bidsmosaic.mosaic:main"
+bids-mosaic = "bidsmosaic.cli:main"
 
 [tool.setuptools]
 packages = ["bidsmosaic"]

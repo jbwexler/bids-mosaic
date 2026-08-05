@@ -4,11 +4,13 @@ import io
 import sys
 import json
 import gzip
+import logging
 import numpy as np
 import nibabel as nb
 import PIL.Image
 from reportlab.lib.styles import getSampleStyleSheet
 import bidsmosaic.mosaic as mosaic
+import bidsmosaic.cli as cli
 
 
 @pytest.fixture
@@ -69,7 +71,7 @@ def run_main(monkeypatch, tmp_path, *args):
     """Runs main() as if from the command line, with tmp_path as the cwd."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["bids-mosaic", *args])
-    mosaic.main()
+    cli.main()
 
 
 def test_create_sized_img_fits(tmp_path):
@@ -437,6 +439,46 @@ def test_main_json_input_empty(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit):
         run_main(monkeypatch, tmp_path, "--json-input", json_path)
+
+
+def test_main_max_img_size(monkeypatch, tmp_path):
+    """The flags have to land on mosaic's globals, since create_sized_img reads
+    those, not the cli's."""
+    json_path = write_json(
+        tmp_path, {"Anatomical": [make_nifti(tmp_path, "T1w.nii.gz")]}
+    )
+    # Same values, so monkeypatch puts the defaults back after the test.
+    monkeypatch.setattr(mosaic, "MAX_IMG_HEIGHT", mosaic.MAX_IMG_HEIGHT)
+    monkeypatch.setattr(mosaic, "MAX_IMG_WIDTH", mosaic.MAX_IMG_WIDTH)
+
+    run_main(
+        monkeypatch,
+        tmp_path,
+        "--json-input",
+        json_path,
+        "--max-img-height",
+        "40",
+        "--max-img-width",
+        "30",
+    )
+
+    assert (mosaic.MAX_IMG_HEIGHT, mosaic.MAX_IMG_WIDTH) == (40, 30)
+
+
+def test_main_debug_enables_mosaic_logging(monkeypatch, tmp_path):
+    """--debug has to reach mosaic's logger, not only the cli's."""
+    json_path = write_json(
+        tmp_path, {"Anatomical": [make_nifti(tmp_path, "T1w.nii.gz")]}
+    )
+    package_logger = logging.getLogger("bidsmosaic")
+    previous_level = package_logger.level
+
+    try:
+        run_main(monkeypatch, tmp_path, "--json-input", json_path, "--debug")
+
+        assert logging.getLogger(mosaic.__name__).isEnabledFor(logging.DEBUG)
+    finally:
+        package_logger.setLevel(previous_level)
 
 
 def test_main_requires_dataset_or_json_input(monkeypatch, tmp_path):
