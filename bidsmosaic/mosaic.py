@@ -90,26 +90,27 @@ def load_stream_img(stream, filename: str):
 
 
 def create_slice_img(
-    img_path: str,
+    img_path: str | tuple,
     out_dir: str,
     display_mode="x",
     cut_coords=np.array([0]),
     colorbar=False,
     ds_path=None,
     downsample=None,
-    from_bytes=False,
     strict=False,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
-    sagittal slice. With from_bytes, img_path is a (filename, stream) tuple and
-    the image is read from the stream instead of from disk."""
+    sagittal slice. img_path is a path to read from disk, or a
+    (filename, stream) tuple to read from an already open stream, in which case
+    the filename is only used to name the png."""
 
-    if from_bytes:
+    stream = None
+    if isinstance(img_path, tuple):
         img_path, stream = img_path
 
     logger.debug(f"Creating png from {img_path}")
     try:
-        if from_bytes:
+        if stream is not None:
             img = load_stream_img(stream, img_path)
         else:
             img = nb.load(img_path)
@@ -383,7 +384,6 @@ def create_mosaic_pdf(
     freesurfer=None,
     metadata=None,
     files_dict=None,
-    from_bytes=False,
     strict=False,
 ) -> None:
     """Creates a mosaic pdf."""
@@ -397,11 +397,7 @@ def create_mosaic_pdf(
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
 
-    slice_kwargs = {
-        "downsample": downsample,
-        "strict": strict,
-        "from_bytes": from_bytes,
-    }
+    slice_kwargs = {"downsample": downsample, "strict": strict}
 
     if files_dict is not None:
         logger.info(f"Creating images from files_dict in {png_dir}")
@@ -437,7 +433,7 @@ async def create_mosaic_pdf_async(
     returning an async byte-stream. Nothing is opened until that file's turn
     comes, so only one image is ever held in memory, and each stream is created
     on the same event loop that reads it."""
-    slice_kwargs = {"downsample": downsample, "strict": strict, "from_bytes": True}
+    slice_kwargs = {"downsample": downsample, "strict": strict}
 
     with tempfile.TemporaryDirectory() as png_dir:
         for dtype, file_list in files_dict.items():

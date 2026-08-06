@@ -47,8 +47,8 @@ def image_bytes(image_class=nb.Nifti1Image, shape=(8, 8, 8), gzipped=True):
 
 
 def make_nifti_stream(name="T1w.nii.gz", shape=(8, 8, 8)):
-    """Returns a (filename, stream) tuple, as create_slice_img takes with
-    from_bytes. Gzipped when the name says so, like a real file would be."""
+    """Returns a (filename, stream) tuple, as create_slice_img takes in place of
+    a path. Gzipped when the name says so, like a real file would be."""
     return name, io.BytesIO(image_bytes(shape=shape, gzipped=name.endswith(".gz")))
 
 
@@ -194,7 +194,7 @@ def test_create_slice_img_from_stream(tmp_path):
     out_dir = make_out_dir(tmp_path)
 
     mosaic.create_slice_img(
-        make_nifti_stream("sub-01_T1w.nii.gz"), str(out_dir), from_bytes=True
+        make_nifti_stream("sub-01_T1w.nii.gz"), str(out_dir)
     )
 
     assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.gz.png"]
@@ -204,7 +204,7 @@ def test_create_slice_img_from_uncompressed_stream(tmp_path):
     out_dir = make_out_dir(tmp_path)
 
     mosaic.create_slice_img(
-        make_nifti_stream("sub-01_T1w.nii"), str(out_dir), from_bytes=True
+        make_nifti_stream("sub-01_T1w.nii"), str(out_dir)
     )
 
     assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.png"]
@@ -218,7 +218,6 @@ def test_create_slice_img_from_stream_ds_path(tmp_path):
         make_nifti_stream("ds/sub-01/anat/T1w.nii.gz"),
         str(out_dir),
         ds_path="ds",
-        from_bytes=True,
     )
 
     assert [p.name for p in out_dir.iterdir()] == ["sub-01:anat:T1w.nii.gz.png"]
@@ -229,7 +228,7 @@ def test_create_slice_img_from_mgh_stream(tmp_path, name):
     """Freesurfer images stream too, gzipped (.mgz) or not (.mgh)."""
     out_dir = make_out_dir(tmp_path)
 
-    mosaic.create_slice_img(make_mgh_stream(name), str(out_dir), from_bytes=True)
+    mosaic.create_slice_img(make_mgh_stream(name), str(out_dir))
 
     assert [p.name for p in out_dir.iterdir()] == [f"{name}.png"]
 
@@ -240,7 +239,6 @@ def test_create_slice_img_from_stream_skips_4d(tmp_path):
     mosaic.create_slice_img(
         make_nifti_stream("bold.nii.gz", shape=(8, 8, 8, 2)),
         str(out_dir),
-        from_bytes=True,
     )
 
     assert list(out_dir.iterdir()) == []
@@ -258,7 +256,7 @@ def test_create_slice_img_from_unreadable_stream(tmp_path, name, data):
     """An unreadable stream is skipped, like a missing file is."""
     out_dir = make_out_dir(tmp_path)
 
-    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir), from_bytes=True)
+    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir))
 
     assert list(out_dir.iterdir()) == []
 
@@ -279,7 +277,6 @@ def test_create_slice_img_strict_unreadable(tmp_path):
         mosaic.create_slice_img(
             ("garbage.nii", io.BytesIO(b"nope" * 200)),
             str(out_dir),
-            from_bytes=True,
             strict=True,
         )
 
@@ -354,7 +351,6 @@ def test_create_mosaic_pdf_from_streams(tmp_path):
                 make_nifti_stream("sub-02_T1w.nii.gz"),
             ]
         },
-        from_bytes=True,
     )
 
     assert out_pdf.exists()
