@@ -1,8 +1,8 @@
 import numpy as np
-import argparse
 import os.path
-import sys
 import glob
+import gzip
+import io
 import tempfile
 import json
 import logging
@@ -29,6 +29,29 @@ logger = logging.getLogger(__name__)
 MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
 
+IMAGE_READ_ERRORS = (
+    nb.filebasedimages.ImageFileError,
+    nb.spatialimages.HeaderDataError,
+    nb.wrapstruct.WrapStructError,
+    nb.freesurfer.mghformat.MGHError,
+    gzip.BadGzipFile,
+)
+
+
+class MosaicError(Exception):
+    """Raised when a mosaic can't be created. The command line interface
+    reports these as errors; callers using bidsmosaic as a library are left to
+    handle them."""
+
+
+def skip_or_raise(message: str, strict: bool) -> None:
+    """Reports an image that can't be turned into a slice, either by warning
+    that it is being skipped or, when strict, by raising so one bad image fails
+    the whole run."""
+    if strict:
+        raise MosaicError(message)
+    logger.warning("%s Skipping." % message)
+
 
 def enhance_brightness(
     img: PIL.Image, target_brightness=100, threshold=10
@@ -42,33 +65,77 @@ def enhance_brightness(
     return PIL.Image.fromarray(arr).convert("L")
 
 
+def unique_path(path: str) -> str:
+    """Returns path, or path with _1, _2, ... appended to the filename if it is
+    already taken, so images that share a name don't overwrite each other."""
+    if not os.path.exists(path):
+        return path
+
+    stem, ext = os.path.splitext(path)
+    count = 1
+    while os.path.exists(f"{stem}_{count}{ext}"):
+        count += 1
+    return f"{stem}_{count}{ext}"
+
+
+def load_stream_img(stream, filename: str):
+    """Loads a nifti or freesurfer image from an open stream, gunzipping it if
+    the filename says to. Image data is read lazily, so the stream must stay 
+    open until the image is used."""
+    if filename.endswith((".gz", ".mgz")):
+        stream = gzip.open(stream)
+    if filename.endswith((".mgz", ".mgh")):
+        return nb.MGHImage.from_stream(stream)
+
+    header = stream.read(nb.Nifti2Header.sizeof_hdr)
+    stream.seek(0)
+    if nb.Nifti2Header.may_contain_header(header):
+        return nb.Nifti2Image.from_stream(stream)
+    return nb.Nifti1Image.from_stream(stream)
+
+
 def create_slice_img(
-    img_path: str,
+    img_path: str | tuple,
     out_dir: str,
-    ds_path: str,
     display_mode="x",
     cut_coords=np.array([0]),
     colorbar=False,
-    ds_root=None,
+    ds_path=None,
     downsample=None,
+    strict=False,
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
-    sagittal slice."""
+    sagittal slice. img_path is a path to read from disk, or a
+    (filename, stream) tuple to read from an already open stream, in which case
+    the filename is only used to name the png."""
+
+    stream = None
+    if isinstance(img_path, tuple):
+        img_path, stream = img_path
 
     logger.debug(f"Creating png from {img_path}")
     try:
-        img = nb.load(img_path)
+        if stream is not None:
+            img = load_stream_img(stream, img_path)
+        else:
+            img = nb.load(img_path)
     except FileNotFoundError:
-        logger.warning("Skipping %s because file was not found." % img_path)
+        skip_or_raise("%s was not found." % img_path, strict)
+        return
+    except IMAGE_READ_ERRORS as e:
+        skip_or_raise("%s couldn't be read: %s" % (img_path, e), strict)
         return
 
-    if ds_root:
+    if ds_path:
         relpath = os.path.relpath(img_path, ds_path)
-        out_file = relpath.replace("/", ":") + ".png"
+        out_file = relpath.replace("/", ":")
     else:
-        out_file = os.path.basename(img_path) + ".png"
+        out_file = os.path.basename(img_path)
 
-    out_path = os.path.join(out_dir, out_file)
+    if len(img.shape) == 2:
+        out_file += "_2D"
+
+    out_path = unique_path(os.path.join(out_dir, out_file + ".png"))
 
     if len(img.shape) == 3:
         try:
@@ -80,8 +147,8 @@ def create_slice_img(
                 annotate=False,
             )
         except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
-            logger.warning("Skipping %s due to the following error: %s" % (img_path, e))
             plt.close()
+            skip_or_raise("%s couldn't be plotted: %s" % (img_path, e), strict)
             return
 
         plt.savefig(out_path, transparent=True)
@@ -90,8 +157,10 @@ def create_slice_img(
         img_data = img.get_fdata()
         img_data = np.flipud(img_data.T)
 
-        out_path = out_path.replace(".png", "_2D.png")
         plt.imsave(out_path, img_data, cmap="gray")
+    else:
+        skip_or_raise("%s is %dD." % (img_path, len(img.shape)), strict)
+        return
     plt.close()
 
     # Remove transparent margins
@@ -159,8 +228,7 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
     image_path_list = sorted(glob.glob(img_dir_path + "/*"))
 
     if not image_path_list:
-        logger.error(f"No images found in {img_dir_path}")
-        sys.exit(1)
+        raise MosaicError(f"No images found in {img_dir_path}")
 
     table_data = [
         [
@@ -238,7 +306,18 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
 
     flowables = []
 
-    for d in glob.glob(os.path.join(img_dir_path, "*")):
+    img_dirs = sorted(
+        d for d in glob.glob(os.path.join(img_dir_path, "*")) if os.path.isdir(d)
+    )
+
+    if not img_dirs:
+        raise MosaicError(
+            "No image directories found in %s. Images must be in a "
+            "subdirectory named after their datatype, eg %s."
+            % (img_dir_path, os.path.join(img_dir_path, "Anatomical"))
+        )
+
+    for d in img_dirs:
         title_text = os.path.basename(d) + " Images"
         title = Paragraph(title_text, styles["Title"])
         flowables.append(title)
@@ -262,8 +341,9 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
     logger.info("Successfully created pdf")
 
 
-def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> None:
-    """Creates anatomical mosaic .png files."""
+def create_anat_images(layout: BIDSLayout, png_dir: str, **slice_kwargs) -> None:
+    """Creates anatomical mosaic .png files. Extra keyword arguments are passed
+    on to create_slice_img."""
     anat_layout_kwargs = {
         "datatype": "anat",
         "extension": ["nii", "nii.gz"],
@@ -274,18 +354,30 @@ def create_anat_images(layout: BIDSLayout, png_dir: str, downsample=None) -> Non
     os.makedirs(anat_png_dir, exist_ok=True)
 
     for file in files:
-        create_slice_img(file.path, anat_png_dir, layout.root, downsample=downsample)
+        create_slice_img(file.path, anat_png_dir, **slice_kwargs)
 
 
-def create_fs_images(fs_dir: str, png_dir: str, downsample=None) -> None:
-    """Creates freesurfer mosaic .png files."""
+def create_fs_images(fs_dir: str, png_dir: str, **slice_kwargs) -> None:
+    """Creates freesurfer mosaic .png files. Extra keyword arguments are passed
+    on to create_slice_img."""
     fs_png_dir = os.path.join(png_dir, "Freesurfer")
     os.makedirs(fs_png_dir, exist_ok=True)
 
     for file_path in glob.glob(os.path.join(fs_dir, "sub-*/mri/orig/*")):
-        create_slice_img(
-            file_path, fs_png_dir, fs_dir, ds_root=fs_dir, downsample=downsample
-        )
+        create_slice_img(file_path, fs_png_dir, ds_path=fs_dir, **slice_kwargs)
+
+
+def create_dict_images(files_dict: dict, png_dir: str, **slice_kwargs) -> None:
+    """Create mosaic .png files according to dictionary. Keys should be strings
+    of name of datatype (eg "Anatomical") and values should be a list of paths to
+    nifti image files. Extra keyword arguments are passed on to create_slice_img."""
+
+    for dtype, file_list in files_dict.items():
+        dtype_png_dir = os.path.join(png_dir, dtype)
+        os.makedirs(dtype_png_dir, exist_ok=True)
+
+        for file in file_list:
+            create_slice_img(file, dtype_png_dir, **slice_kwargs)
 
 
 def create_mosaic_pdf(
@@ -296,22 +388,34 @@ def create_mosaic_pdf(
     downsample=None,
     freesurfer=None,
     metadata=None,
+    files_dict=None,
+    strict=False,
 ) -> None:
     """Creates a mosaic pdf."""
     if png_out_dir:
         png_dir = png_out_dir
+        if os.path.isdir(png_dir) and any(
+            not f.startswith(".") for f in os.listdir(png_dir)
+        ):
+            raise MosaicError("png-out-dir %s is not empty." % png_dir)
     else:
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
 
-    layout = BIDSLayout(dataset, validate=False)
+    slice_kwargs = {"downsample": downsample, "strict": strict}
 
-    if anat:
-        logger.info(f"Creating anat images in {png_dir}")
-        create_anat_images(layout, png_dir, downsample=downsample)
-    if freesurfer:
-        logger.info(f"Creating freesurfer images in {png_dir}")
-        create_fs_images(freesurfer, png_dir, downsample=downsample)
+    if files_dict is not None:
+        logger.info(f"Creating images from files_dict in {png_dir}")
+        create_dict_images(files_dict, png_dir, **slice_kwargs)
+    else:
+        layout = BIDSLayout(dataset, validate=False)
+
+        if anat:
+            logger.info(f"Creating anat images in {png_dir}")
+            create_anat_images(layout, png_dir, **slice_kwargs)
+        if freesurfer:
+            logger.info(f"Creating freesurfer images in {png_dir}")
+            create_fs_images(freesurfer, png_dir, **slice_kwargs)
 
     logger.info(f"Creating pdf at {out_file}")
     create_pdf(png_dir, out_file, metadata)
@@ -320,97 +424,32 @@ def create_mosaic_pdf(
         temp_dir_obj.cleanup()
 
 
-def main():
-    logging.basicConfig(level=logging.INFO)
+async def create_mosaic_pdf_async(
+    out_file: str,
+    files_dict: dict,
+    downsample=None,
+    metadata=None,
+    strict=False,
+) -> None:
+    """Streaming counterpart of create_mosaic_pdf.
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", type=str, help="Path to dataset")
-    parser.add_argument(
-        "-o",
-        "--out-file",
-        type=str,
-        help="Path to output pdf. Defaults to <input dir name>_mosaics.pdf in working directory.",
-    )
-    parser.add_argument(
-        "--png-in-dir",
-        type=str,
-        help="Path to existing directory of .png files, bypassing creation of those from .nii files.",
-    )
-    parser.add_argument(
-        "--png-out-dir",
-        type=str,
-        help="Path to directory to output .png slice images to, instead of creating a temp directory.",
-    )
-    parser.add_argument(
-        "-m",
-        "--metadata",
-        type=str,
-        help="JSON string to include as metadata at the end of the output file.",
-    )
-    parser.add_argument(
-        "--no-anat",
-        action="store_false",
-        dest="anat",
-        help="Do not include anatomical images.",
-    )
-    parser.add_argument(
-        "--freesurfer",
-        type=str,
-        help="Path to freesurfer data.",
-    )
-    parser.add_argument(
-        "--downsample",
-        type=int,
-        help="Factor by which to downsample images.",
-    )
-    parser.add_argument(
-        "--max-img-height",
-        type=int,
-        help="Max height of images.",
-    )
-    parser.add_argument(
-        "--max-img-width",
-        type=int,
-        help="Max width of images.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Set logging level to DEBUG.",
-    )
+    files_dict maps a datatype name (eg "Anatomical") to a list of
+    (filename, opener) pairs, where opener is a zero-arg async callable
+    returning an async byte-stream. Nothing is opened until that file's turn
+    comes, so only one image is ever held in memory, and each stream is created
+    on the same event loop that reads it."""
+    slice_kwargs = {"downsample": downsample, "strict": strict}
 
-    args = parser.parse_args()
+    with tempfile.TemporaryDirectory() as png_dir:
+        for dtype, file_list in files_dict.items():
+            dtype_png_dir = os.path.join(png_dir, dtype)
+            os.makedirs(dtype_png_dir)
+            for filename, opener in file_list:
+                logger.info(f"Streaming {filename} into {dtype_png_dir}")
+                stream = await opener()
+                data = b"".join([chunk async for chunk in stream])
+                with io.BytesIO(data) as buf:
+                    create_slice_img((filename, buf), dtype_png_dir, **slice_kwargs)
 
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
-
-    if args.max_img_height:
-        global MAX_IMG_HEIGHT
-        MAX_IMG_HEIGHT = args.max_img_height
-    if args.max_img_width:
-        global MAX_IMG_WIDTH
-        MAX_IMG_WIDTH = args.max_img_width
-
-    if args.out_file:
-        out_file = args.out_file
-    else:
-        in_abs = os.path.abspath(args.dataset)
-        out_file = os.path.basename(in_abs) + "_mosaic.pdf"
-
-    if not args.png_in_dir:
-        create_mosaic_pdf(
-            args.dataset,
-            out_file,
-            anat=args.anat,
-            png_out_dir=args.png_out_dir,
-            downsample=args.downsample,
-            freesurfer=args.freesurfer,
-            metadata=args.metadata,
-        )
-    else:
         logger.info(f"Creating pdf at {out_file}")
-        create_pdf(args.png_in_dir, out_file, args.metadata)
-
-
-if __name__ == "__main__":
-    main()
+        create_pdf(png_dir, out_file, metadata=metadata)
