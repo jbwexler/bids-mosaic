@@ -80,12 +80,17 @@ def unique_path(path: str) -> str:
 
 def load_stream_img(stream, filename: str):
     """Loads a nifti or freesurfer image from an open stream, gunzipping it if
-    the filename says to. Image data is read lazily, so the stream must stay
+    the filename says to. Image data is read lazily, so the stream must stay 
     open until the image is used."""
     if filename.endswith((".gz", ".mgz")):
         stream = gzip.open(stream)
     if filename.endswith((".mgz", ".mgh")):
         return nb.MGHImage.from_stream(stream)
+
+    header = stream.read(nb.Nifti2Header.sizeof_hdr)
+    stream.seek(0)
+    if nb.Nifti2Header.may_contain_header(header):
+        return nb.Nifti2Image.from_stream(stream)
     return nb.Nifti1Image.from_stream(stream)
 
 

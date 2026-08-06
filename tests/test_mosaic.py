@@ -190,24 +190,61 @@ def test_create_slice_img_skips_4d(tmp_path):
     assert list(out_dir.iterdir()) == []
 
 
-def test_create_slice_img_from_stream(tmp_path):
+@pytest.mark.parametrize("image_class", [nb.Nifti1Image, nb.Nifti2Image])
+@pytest.mark.parametrize("name", ["sub-01_T1w.nii.gz", "sub-01_T1w.nii"])
+def test_create_slice_img_from_stream(tmp_path, image_class, name):
+    """Nifti1 and Nifti2 share the .nii extension, so both have to stream,
+    gzipped or not."""
     out_dir = make_out_dir(tmp_path)
+    raw = image_bytes(image_class, gzipped=name.endswith(".gz"))
 
-    mosaic.create_slice_img(
-        make_nifti_stream("sub-01_T1w.nii.gz"), str(out_dir)
-    )
+    mosaic.create_slice_img((name, io.BytesIO(raw)), str(out_dir))
 
-    assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.gz.png"]
+    assert [p.name for p in out_dir.iterdir()] == [f"{name}.png"]
 
 
-def test_create_slice_img_from_uncompressed_stream(tmp_path):
+@pytest.mark.parametrize("image_class", [nb.Nifti1Image, nb.Nifti2Image])
+def test_load_stream_img_picks_nifti_version(image_class):
+    """The nifti version comes from the header, not the filename."""
+    raw = image_bytes(image_class, gzipped=False)
+
+    img = mosaic.load_stream_img(io.BytesIO(raw), "sub-01_T1w.nii")
+
+    assert isinstance(img, image_class)
+
+
+def test_load_stream_img_big_endian_nifti2():
+    """Version detection is byte-swap aware, so big-endian files load too."""
+    data = np.arange(512, dtype=">f4").reshape(8, 8, 8)
+    raw = nb.Nifti2Image(data, np.eye(4)).to_bytes()
+
+    img = mosaic.load_stream_img(io.BytesIO(raw), "sub-01_T1w.nii")
+
+    assert isinstance(img, nb.Nifti2Image)
+    assert np.array_equal(np.asanyarray(img.dataobj), data)
+
+
+def test_load_stream_img_corrupt_nifti1_reports_its_own_error():
+    """A broken nifti1 has to report the nifti1 problem. Deciding the version by
+    trying nifti1 and falling back would report the nifti2 attempt's error
+    instead, naming the wrong format and field."""
+    raw = bytearray(image_bytes(gzipped=False))
+    raw[70:72] = b"\xff\xff"  # datatype field -> -1, an invalid code
+
+    with pytest.raises(mosaic.IMAGE_READ_ERRORS, match="-1"):
+        mosaic.load_stream_img(io.BytesIO(bytes(raw)), "sub-01_T1w.nii")
+
+
+def test_create_slice_img_corrupt_nifti1_strict(tmp_path):
+    """That error reaches the caller, rather than a misleading one."""
     out_dir = make_out_dir(tmp_path)
+    raw = bytearray(image_bytes(gzipped=False))
+    raw[70:72] = b"\xff\xff"
 
-    mosaic.create_slice_img(
-        make_nifti_stream("sub-01_T1w.nii"), str(out_dir)
-    )
-
-    assert [p.name for p in out_dir.iterdir()] == ["sub-01_T1w.nii.png"]
+    with pytest.raises(mosaic.MosaicError, match="couldn't be read.*-1"):
+        mosaic.create_slice_img(
+            ("sub-01_T1w.nii", io.BytesIO(bytes(raw))), str(out_dir), strict=True
+        )
 
 
 def test_create_slice_img_from_stream_ds_path(tmp_path):
