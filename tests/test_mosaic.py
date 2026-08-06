@@ -5,6 +5,7 @@ import sys
 import json
 import gzip
 import logging
+import asyncio
 import numpy as np
 import nibabel as nb
 import PIL.Image
@@ -38,24 +39,25 @@ def make_out_dir(tmp_path):
     return out_dir
 
 
+def image_bytes(image_class=nb.Nifti1Image, shape=(8, 8, 8), gzipped=True):
+    """Returns the on-disk bytes of an image, as a file or stream would hold."""
+    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
+    raw = image_class(data, np.eye(4)).to_bytes()
+    return gzip.compress(raw) if gzipped else raw
+
+
 def make_nifti_stream(name="T1w.nii.gz", shape=(8, 8, 8)):
     """Returns a (filename, stream) tuple, as create_slice_img takes with
     from_bytes. Gzipped when the name says so, like a real file would be."""
-    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
-    raw = nb.Nifti1Image(data, np.eye(4)).to_bytes()
-    if name.endswith(".gz"):
-        raw = gzip.compress(raw)
-    return name, io.BytesIO(raw)
+    return name, io.BytesIO(image_bytes(shape=shape, gzipped=name.endswith(".gz")))
 
 
 def make_mgh_stream(name="001.mgz", shape=(8, 8, 8)):
     """Returns a (filename, stream) tuple holding a freesurfer image. .mgz is
     gzipped on disk, .mgh isn't."""
-    data = np.arange(np.prod(shape), dtype="float32").reshape(shape)
-    raw = nb.MGHImage(data, np.eye(4)).to_bytes()
-    if name.endswith(".mgz"):
-        raw = gzip.compress(raw)
-    return name, io.BytesIO(raw)
+    return name, io.BytesIO(
+        image_bytes(nb.MGHImage, shape, gzipped=name.endswith(".mgz"))
+    )
 
 
 def write_json(tmp_path, contents, name="images.json"):
@@ -356,6 +358,131 @@ def test_create_mosaic_pdf_from_streams(tmp_path):
     )
 
     assert out_pdf.exists()
+
+
+def make_opener(raw, opened=None, name=None):
+    """Builds an opener of the shape create_mosaic_pdf_async expects: a zero-arg
+    async callable resolving to an async byte-stream. Appends to `opened` when
+    called, so tests can tell a file isn't opened before its turn."""
+
+    async def stream():
+        for i in range(0, len(raw), 4096):
+            yield raw[i : i + 4096]
+
+    async def opener():
+        if opened is not None:
+            opened.append(name)
+        return stream()
+
+    return opener
+
+
+def test_create_mosaic_pdf_async(tmp_path):
+    """The streaming path builds a pdf without the images ever hitting disk.
+    Streams name their own compression, gzipped (.nii.gz) or not (.nii)."""
+    out_pdf = tmp_path / "out.pdf"
+
+    asyncio.run(
+        mosaic.create_mosaic_pdf_async(
+            str(out_pdf),
+            {
+                "Anatomical": [
+                    ("sub-01_T1w.nii.gz", make_opener(image_bytes())),
+                    ("sub-02_T1w.nii", make_opener(image_bytes(gzipped=False))),
+                ]
+            },
+        )
+    )
+
+    assert out_pdf.exists()
+
+
+def test_create_mosaic_pdf_async_opens_one_at_a_time(monkeypatch, tmp_path):
+    """Each file is opened only when its turn comes, so one image is in memory
+    at a time. Opens and plots have to alternate; opening every stream up front
+    would give the same order but hold them all open at once."""
+    events = []
+    raw = image_bytes()
+    names = [f"sub-0{i}_T1w.nii.gz" for i in (1, 2, 3)]
+    files = [
+        (name, make_opener(raw, opened=events, name=("open", name))) for name in names
+    ]
+
+    real_create_slice_img = mosaic.create_slice_img
+
+    def spy(img_path, out_dir, **kwargs):
+        events.append(("plot", img_path[0]))
+        return real_create_slice_img(img_path, out_dir, **kwargs)
+
+    monkeypatch.setattr(mosaic, "create_slice_img", spy)
+
+    asyncio.run(
+        mosaic.create_mosaic_pdf_async(str(tmp_path / "out.pdf"), {"Anatomical": files})
+    )
+
+    assert events == [
+        step for name in names for step in (("open", name), ("plot", name))
+    ]
+
+
+def test_create_mosaic_pdf_async_multiple_datatypes(tmp_path):
+    """Each datatype gets its own directory, so the pdf has a section per type."""
+    out_pdf = tmp_path / "out.pdf"
+    raw = image_bytes()
+
+    asyncio.run(
+        mosaic.create_mosaic_pdf_async(
+            str(out_pdf),
+            {
+                "Anatomical": [("sub-01_T1w.nii.gz", make_opener(raw))],
+                "Freesurfer": [("sub-01_001.mgz", make_opener(image_bytes(nb.MGHImage)))],
+            },
+        )
+    )
+
+    assert out_pdf.exists()
+
+
+def test_create_mosaic_pdf_async_strict(tmp_path):
+    """strict reaches create_slice_img through the streaming path too."""
+    with pytest.raises(mosaic.MosaicError, match="couldn't be read"):
+        asyncio.run(
+            mosaic.create_mosaic_pdf_async(
+                str(tmp_path / "out.pdf"),
+                {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
+                strict=True,
+            )
+        )
+
+
+def test_create_mosaic_pdf_async_skips_bad_image(tmp_path):
+    """Without strict, an unreadable stream is skipped and the pdf still builds."""
+    out_pdf = tmp_path / "out.pdf"
+
+    asyncio.run(
+        mosaic.create_mosaic_pdf_async(
+            str(out_pdf),
+            {
+                "Anatomical": [
+                    ("garbage.nii", make_opener(b"nope" * 200)),
+                    ("sub-01_T1w.nii.gz", make_opener(image_bytes())),
+                ]
+            },
+        )
+    )
+
+    assert out_pdf.exists()
+
+
+def test_create_mosaic_pdf_async_no_usable_images(tmp_path):
+    """A datatype whose images all fail leaves an empty dir, which is an error."""
+    with pytest.raises(mosaic.MosaicError, match="No images found"):
+        asyncio.run(
+            mosaic.create_mosaic_pdf_async(
+                str(tmp_path / "out.pdf"),
+                {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
+            )
+        )
 
 
 def test_create_mosaic_pdf_png_out_dir_not_empty(tmp_path):

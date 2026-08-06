@@ -2,6 +2,7 @@ import numpy as np
 import os.path
 import glob
 import gzip
+import io
 import tempfile
 import json
 import logging
@@ -420,3 +421,34 @@ def create_mosaic_pdf(
 
     if not png_out_dir:
         temp_dir_obj.cleanup()
+
+
+async def create_mosaic_pdf_async(
+    out_file: str,
+    files_dict: dict,
+    downsample=None,
+    metadata=None,
+    strict=False,
+) -> None:
+    """Streaming counterpart of create_mosaic_pdf.
+
+    files_dict maps a datatype name (eg "Anatomical") to a list of
+    (filename, opener) pairs, where opener is a zero-arg async callable
+    returning an async byte-stream. Nothing is opened until that file's turn
+    comes, so only one image is ever held in memory, and each stream is created
+    on the same event loop that reads it."""
+    slice_kwargs = {"downsample": downsample, "strict": strict, "from_bytes": True}
+
+    with tempfile.TemporaryDirectory() as png_dir:
+        for dtype, file_list in files_dict.items():
+            dtype_png_dir = os.path.join(png_dir, dtype)
+            os.makedirs(dtype_png_dir)
+            for filename, opener in file_list:
+                logger.info(f"Streaming {filename} into {dtype_png_dir}")
+                stream = await opener()
+                data = b"".join([chunk async for chunk in stream])
+                with io.BytesIO(data) as buf:
+                    create_slice_img((filename, buf), dtype_png_dir, **slice_kwargs)
+
+        logger.info(f"Creating pdf at {out_file}")
+        create_pdf(png_dir, out_file, metadata=metadata)
