@@ -184,7 +184,9 @@ def test_create_slice_img_skips_4d(tmp_path):
     out_dir = make_out_dir(tmp_path)
 
     mosaic.create_slice_img(
-        make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)), str(out_dir)
+        make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
+        str(out_dir),
+        on_error="skip",
     )
 
     assert list(out_dir.iterdir()) == []
@@ -243,7 +245,7 @@ def test_create_slice_img_corrupt_nifti1_strict(tmp_path):
 
     with pytest.raises(mosaic.MosaicError, match="couldn't be read.*-1"):
         mosaic.create_slice_img(
-            ("sub-01_T1w.nii", io.BytesIO(bytes(raw))), str(out_dir), strict=True
+            ("sub-01_T1w.nii", io.BytesIO(bytes(raw))), str(out_dir), on_error="strict"
         )
 
 
@@ -276,6 +278,7 @@ def test_create_slice_img_from_stream_skips_4d(tmp_path):
     mosaic.create_slice_img(
         make_nifti_stream("bold.nii.gz", shape=(8, 8, 8, 2)),
         str(out_dir),
+        on_error="skip",
     )
 
     assert list(out_dir.iterdir()) == []
@@ -293,9 +296,105 @@ def test_create_slice_img_from_unreadable_stream(tmp_path, name, data):
     """An unreadable stream is skipped, like a missing file is."""
     out_dir = make_out_dir(tmp_path)
 
-    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir))
+    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir), on_error="skip")
 
     assert list(out_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "img_path, message",
+    [
+        (lambda tmp_path: str(tmp_path / "nope.nii.gz"), "was not found"),
+        (
+            lambda tmp_path: ("garbage.nii", io.BytesIO(b"nope" * 200)),
+            "couldn't be read",
+        ),
+        (
+            lambda tmp_path: make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
+            "is 4D",
+        ),
+    ],
+)
+def test_create_slice_img_placeholder(tmp_path, img_path, message):
+    """By default a bad image leaves a .error file holding the reason, in place
+    of its png."""
+    out_dir = make_out_dir(tmp_path)
+
+    mosaic.create_slice_img(img_path(tmp_path), str(out_dir))
+
+    [error_file] = out_dir.iterdir()
+    assert error_file.suffix == ".error"
+    assert message in error_file.read_text()
+
+
+def test_create_slice_img_placeholder_same_basename(tmp_path):
+    """Placeholders that share a name don't overwrite each other either."""
+    out_dir = make_out_dir(tmp_path)
+
+    for sub in ("sub-01", "sub-02"):
+        mosaic.create_slice_img(str(tmp_path / sub / "T1w.nii.gz"), str(out_dir))
+
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "T1w.nii.gz.error",
+        "T1w.nii.gz_1.error",
+    ]
+
+
+def test_create_mosaic_pdf_bad_on_error(monkeypatch, tmp_path):
+    """A bad on_error fails before the dataset is indexed."""
+
+    def fail(*args, **kwargs):
+        raise AssertionError("BIDSLayout shouldn't be built")
+
+    monkeypatch.setattr(mosaic, "BIDSLayout", fail)
+
+    with pytest.raises(ValueError, match="on_error"):
+        mosaic.create_mosaic_pdf(
+            str(tmp_path), str(tmp_path / "out.pdf"), on_error="ignore"
+        )
+
+
+def test_create_mosaic_pdf_async_bad_on_error(tmp_path):
+    """A bad on_error fails before any stream is opened."""
+    opened = []
+
+    with pytest.raises(ValueError, match="on_error"):
+        asyncio.run(
+            mosaic.create_mosaic_pdf_async(
+                str(tmp_path / "out.pdf"),
+                {"Anatomical": [("a.nii.gz", make_opener(image_bytes(), opened))]},
+                on_error="ignore",
+            )
+        )
+
+    assert opened == []
+
+
+def test_create_filename_caption_error():
+    result = mosaic.create_filename_caption("sub-01_T1w.nii.gz.error")
+    assert result == "sub-01_T1w.nii.gz"
+
+
+def test_create_mosaic_table_placeholder(tmp_path):
+    """A .error file becomes an "Error" cell captioned with the file name."""
+    PIL.Image.new("L", (40, 40)).save(tmp_path / "a.nii.gz.png")
+    (tmp_path / "b.nii.gz.error").write_text("b.nii.gz is 4D.\n")
+
+    table = mosaic.create_mosaic_table(str(tmp_path), 576, getSampleStyleSheet())
+
+    image_cell, error_cell = table._cellvalues[0]
+    assert isinstance(image_cell[0], mosaic.Image)
+    assert error_cell[0].getPlainText() == "Error"
+    assert error_cell[1].getPlainText() == "b.nii.gz"
+
+
+def test_create_mosaic_table_only_placeholders(tmp_path):
+    """With no images to size columns by, the max image width is used."""
+    (tmp_path / "a.nii.gz.error").write_text("a.nii.gz is 4D.\n")
+
+    table = mosaic.create_mosaic_table(str(tmp_path), 576, getSampleStyleSheet())
+
+    assert table._colWidths[0] == int(576 / int(576 / mosaic.MAX_IMG_WIDTH))
 
 
 def test_create_slice_img_strict_missing_file(tmp_path):
@@ -303,7 +402,7 @@ def test_create_slice_img_strict_missing_file(tmp_path):
 
     with pytest.raises(mosaic.MosaicError, match="was not found"):
         mosaic.create_slice_img(
-            str(tmp_path / "nope.nii.gz"), str(out_dir), strict=True
+            str(tmp_path / "nope.nii.gz"), str(out_dir), on_error="strict"
         )
 
 
@@ -314,7 +413,7 @@ def test_create_slice_img_strict_unreadable(tmp_path):
         mosaic.create_slice_img(
             ("garbage.nii", io.BytesIO(b"nope" * 200)),
             str(out_dir),
-            strict=True,
+            on_error="strict",
         )
 
 
@@ -325,16 +424,16 @@ def test_create_slice_img_strict_4d(tmp_path):
         mosaic.create_slice_img(
             make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
             str(out_dir),
-            strict=True,
+            on_error="strict",
         )
 
 
 def test_create_slice_img_strict_ok(tmp_path):
-    """A readable image is unaffected by strict."""
+    """A readable image is unaffected by on_error."""
     out_dir = make_out_dir(tmp_path)
 
     mosaic.create_slice_img(
-        make_nifti(tmp_path, "T1w.nii.gz"), str(out_dir), strict=True
+        make_nifti(tmp_path, "T1w.nii.gz"), str(out_dir), on_error="strict"
     )
 
     assert [p.name for p in out_dir.iterdir()] == ["T1w.nii.gz.png"]
@@ -352,12 +451,12 @@ def test_create_mosaic_pdf_strict(tmp_path):
                     str(tmp_path / "nope.nii.gz"),
                 ]
             },
-            strict=True,
+            on_error="strict",
         )
 
 
 def test_main_strict_bad_image_exits(monkeypatch, tmp_path):
-    """Without strict the good image alone makes a pdf; with it, main exits."""
+    """By default the bad image gets a placeholder; with strict, main exits."""
     json_path = write_json(
         tmp_path,
         {
@@ -372,7 +471,9 @@ def test_main_strict_bad_image_exits(monkeypatch, tmp_path):
     assert (tmp_path / "images_mosaic.pdf").exists()
 
     with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path, "--strict")
+        run_main(
+            monkeypatch, tmp_path, "--json-input", json_path, "--on-error", "strict"
+        )
 
 
 def test_create_mosaic_pdf_from_streams(tmp_path):
@@ -477,19 +578,20 @@ def test_create_mosaic_pdf_async_multiple_datatypes(tmp_path):
 
 
 def test_create_mosaic_pdf_async_strict(tmp_path):
-    """strict reaches create_slice_img through the streaming path too."""
+    """on_error reaches create_slice_img through the streaming path too."""
     with pytest.raises(mosaic.MosaicError, match="couldn't be read"):
         asyncio.run(
             mosaic.create_mosaic_pdf_async(
                 str(tmp_path / "out.pdf"),
                 {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
-                strict=True,
+                on_error="strict",
             )
         )
 
 
-def test_create_mosaic_pdf_async_skips_bad_image(tmp_path):
-    """Without strict, an unreadable stream is skipped and the pdf still builds."""
+@pytest.mark.parametrize("on_error", ["placeholder", "skip"])
+def test_create_mosaic_pdf_async_bad_image(tmp_path, on_error):
+    """Without strict, the pdf still builds around an unreadable stream."""
     out_pdf = tmp_path / "out.pdf"
 
     asyncio.run(
@@ -501,6 +603,7 @@ def test_create_mosaic_pdf_async_skips_bad_image(tmp_path):
                     ("sub-01_T1w.nii.gz", make_opener(image_bytes())),
                 ]
             },
+            on_error=on_error,
         )
     )
 
@@ -508,14 +611,30 @@ def test_create_mosaic_pdf_async_skips_bad_image(tmp_path):
 
 
 def test_create_mosaic_pdf_async_no_usable_images(tmp_path):
-    """A datatype whose images all fail leaves an empty dir, which is an error."""
+    """When skipping, a datatype whose images all fail leaves an empty dir,
+    which is an error."""
     with pytest.raises(mosaic.MosaicError, match="No images found"):
         asyncio.run(
             mosaic.create_mosaic_pdf_async(
                 str(tmp_path / "out.pdf"),
                 {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
+                on_error="skip",
             )
         )
+
+
+def test_create_mosaic_pdf_async_only_placeholders(tmp_path):
+    """With placeholders, a datatype whose images all fail still makes a pdf."""
+    out_pdf = tmp_path / "out.pdf"
+
+    asyncio.run(
+        mosaic.create_mosaic_pdf_async(
+            str(out_pdf),
+            {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
+        )
+    )
+
+    assert out_pdf.exists()
 
 
 def test_create_mosaic_pdf_png_out_dir_not_empty(tmp_path):
@@ -647,11 +766,12 @@ def test_main_requires_dataset_or_json_input(monkeypatch, tmp_path):
 
 
 def test_main_missing_images_reports_error(monkeypatch, tmp_path):
-    """A json of paths that don't exist is an error, not an empty pdf."""
+    """When skipping, a json of paths that don't exist is an error, not an
+    empty pdf."""
     json_path = write_json(tmp_path, {"Anatomical": [str(tmp_path / "nope.nii.gz")]})
 
     with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path)
+        run_main(monkeypatch, tmp_path, "--json-input", json_path, "--on-error", "skip")
 
 
 def test_run(dataset, tmp_path):

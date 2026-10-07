@@ -71,10 +71,12 @@ def main():
         help="Max width of images.",
     )
     parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="Exit with an error if any image can't be read or plotted, instead "
-        "of warning and skipping it.",
+        "--on-error",
+        choices=mosaic.ON_ERROR_MODES,
+        default="placeholder",
+        help="What to do with an image that can't be read or plotted: include a "
+        "captioned placeholder in its place (placeholder, the default), leave it "
+        "out (skip), or exit with an error (strict).",
     )
     parser.add_argument(
         "--debug",
@@ -132,7 +134,7 @@ def main():
                 freesurfer=args.freesurfer,
                 metadata=args.metadata,
                 files_dict=files_dict,
-                strict=args.strict,
+                on_error=args.on_error,
             )
         else:
             logger.info(f"Creating pdf at {out_file}")

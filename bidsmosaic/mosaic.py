@@ -44,13 +44,32 @@ class MosaicError(Exception):
     handle them."""
 
 
-def skip_or_raise(message: str, strict: bool) -> None:
-    """Reports an image that can't be turned into a slice, either by warning
-    that it is being skipped or, when strict, by raising so one bad image fails
-    the whole run."""
-    if strict:
+ON_ERROR_MODES = ("placeholder", "skip", "strict")
+
+
+def check_on_error(on_error: str) -> None:
+    """Raises if on_error isn't one of ON_ERROR_MODES. Called up front by each
+    entry point, so a typo fails before any work is done rather than at the
+    first image."""
+    if on_error not in ON_ERROR_MODES:
+        raise ValueError(
+            "on_error must be one of %s, not %r" % (", ".join(ON_ERROR_MODES), on_error)
+        )
+
+
+def handle_bad_image(message: str, on_error: str, placeholder_path: str) -> None:
+    """Reports an image that can't be turned into a slice. on_error picks how:
+    "placeholder" warns and writes a .error file holding the message, which the
+    pdf shows as a captioned "Error" cell; "skip" warns and leaves it out;
+    "strict" raises so one bad image fails the whole run."""
+    if on_error == "strict":
         raise MosaicError(message)
-    logger.warning("%s Skipping." % message)
+    if on_error == "placeholder":
+        logger.warning("%s Including a placeholder." % message)
+        with open(unique_path(placeholder_path), "w") as f:
+            f.write(message + "\n")
+    else:
+        logger.warning("%s Skipping." % message)
 
 
 def enhance_brightness(
@@ -102,16 +121,24 @@ def create_slice_img(
     colorbar=False,
     ds_path=None,
     downsample=None,
-    strict=False,
+    on_error="placeholder",
 ) -> None:
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice. img_path is a path to read from disk, or a
     (filename, stream) tuple to read from an already open stream, in which case
-    the filename is only used to name the png."""
-
+    the filename is only used to name the png. on_error is one of
+    ON_ERROR_MODES; see handle_bad_image."""
     stream = None
     if isinstance(img_path, tuple):
         img_path, stream = img_path
+
+    if ds_path:
+        relpath = os.path.relpath(img_path, ds_path)
+        out_file = relpath.replace("/", ":")
+    else:
+        out_file = os.path.basename(img_path)
+
+    error_path = os.path.join(out_dir, out_file + ".error")
 
     logger.debug(f"Creating png from {img_path}")
     try:
@@ -120,17 +147,13 @@ def create_slice_img(
         else:
             img = nb.load(img_path)
     except FileNotFoundError:
-        skip_or_raise("%s was not found." % img_path, strict)
+        handle_bad_image("%s was not found." % img_path, on_error, error_path)
         return
     except IMAGE_READ_ERRORS as e:
-        skip_or_raise("%s couldn't be read: %s" % (img_path, e), strict)
+        handle_bad_image(
+            "%s couldn't be read: %s" % (img_path, e), on_error, error_path
+        )
         return
-
-    if ds_path:
-        relpath = os.path.relpath(img_path, ds_path)
-        out_file = relpath.replace("/", ":")
-    else:
-        out_file = os.path.basename(img_path)
 
     if len(img.shape) == 2:
         out_file += "_2D"
@@ -148,7 +171,9 @@ def create_slice_img(
             )
         except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
             plt.close()
-            skip_or_raise("%s couldn't be plotted: %s" % (img_path, e), strict)
+            handle_bad_image(
+                "%s couldn't be plotted: %s" % (img_path, e), on_error, error_path
+            )
             return
 
         plt.savefig(out_path, transparent=True)
@@ -159,7 +184,9 @@ def create_slice_img(
 
         plt.imsave(out_path, img_data, cmap="gray")
     else:
-        skip_or_raise("%s is %dD." % (img_path, len(img.shape)), strict)
+        handle_bad_image(
+            "%s is %dD." % (img_path, len(img.shape)), on_error, error_path
+        )
         return
     plt.close()
 
@@ -202,7 +229,7 @@ def create_filename_caption(img_path: str) -> str:
     caption_text = os.path.basename(img_path)
     caption_text = caption_text.replace(":", "/")
     caption_text = os.path.relpath(caption_text)
-    caption_text = caption_text.removesuffix(".png")
+    caption_text = caption_text.removesuffix(".png").removesuffix(".error")
     if caption_text.endswith("_2D"):
         caption_text = caption_text.removesuffix("_2D")
         caption_text += " (2D)"
@@ -224,6 +251,12 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         spaceAfter=0,
         spaceBefore=0,
     )
+    error_style = ParagraphStyle(
+        "Error",
+        parent=styles["Normal"],
+        fontSize=10,
+        textColor=colors.red,
+    )
 
     image_path_list = sorted(glob.glob(img_dir_path + "/*"))
 
@@ -232,7 +265,11 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
 
     table_data = [
         [
-            create_sized_img(img_path),
+            (
+                Paragraph("<para align=center>Error</para>", error_style)
+                if img_path.endswith(".error")
+                else create_sized_img(img_path)
+            ),
             Paragraph(
                 f"<para align=center spaceb=3>{create_filename_caption(img_path)}</para>",
                 caption_style,
@@ -241,7 +278,10 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         for img_path in image_path_list
     ]
 
-    largest_img_width = max(row[0]._width for row in table_data)
+    # Error cells have no width of their own, so they fit whatever the images
+    # need, or the max image width if there are no images.
+    img_widths = [row[0]._width for row in table_data if isinstance(row[0], Image)]
+    largest_img_width = max(img_widths, default=MAX_IMG_WIDTH)
     num_col = int(page_width / largest_img_width)
     col_width = int(page_width / num_col)
 
@@ -389,9 +429,12 @@ def create_mosaic_pdf(
     freesurfer=None,
     metadata=None,
     files_dict=None,
-    strict=False,
+    on_error="placeholder",
 ) -> None:
-    """Creates a mosaic pdf."""
+    """Creates a mosaic pdf. on_error is one of ON_ERROR_MODES; see
+    handle_bad_image."""
+    check_on_error(on_error)
+
     if png_out_dir:
         png_dir = png_out_dir
         if os.path.isdir(png_dir) and any(
@@ -402,7 +445,7 @@ def create_mosaic_pdf(
         temp_dir_obj = tempfile.TemporaryDirectory()
         png_dir = temp_dir_obj.name
 
-    slice_kwargs = {"downsample": downsample, "strict": strict}
+    slice_kwargs = {"downsample": downsample, "on_error": on_error}
 
     if files_dict is not None:
         logger.info(f"Creating images from files_dict in {png_dir}")
@@ -429,7 +472,7 @@ async def create_mosaic_pdf_async(
     files_dict: dict,
     downsample=None,
     metadata=None,
-    strict=False,
+    on_error="placeholder",
 ) -> None:
     """Streaming counterpart of create_mosaic_pdf.
 
@@ -438,7 +481,9 @@ async def create_mosaic_pdf_async(
     returning an async byte-stream. Nothing is opened until that file's turn
     comes, so only one image is ever held in memory, and each stream is created
     on the same event loop that reads it."""
-    slice_kwargs = {"downsample": downsample, "strict": strict}
+    check_on_error(on_error)
+
+    slice_kwargs = {"downsample": downsample, "on_error": on_error}
 
     with tempfile.TemporaryDirectory() as png_dir:
         for dtype, file_list in files_dict.items():
