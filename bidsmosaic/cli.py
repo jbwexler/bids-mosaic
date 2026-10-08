@@ -139,7 +139,7 @@ def main():
         else:
             logger.info(f"Creating pdf at {out_file}")
             create_pdf(args.png_in_dir, out_file, args.metadata)
-    except MosaicError as e:
+    except (MosaicError, OSError) as e:
         logger.error(e)
         sys.exit(1)
 

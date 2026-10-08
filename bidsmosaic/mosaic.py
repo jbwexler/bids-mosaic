@@ -29,14 +29,6 @@ logger = logging.getLogger(__name__)
 MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
 
-IMAGE_READ_ERRORS = (
-    nb.filebasedimages.ImageFileError,
-    nb.spatialimages.HeaderDataError,
-    nb.wrapstruct.WrapStructError,
-    nb.freesurfer.mghformat.MGHError,
-    gzip.BadGzipFile,
-)
-
 
 class MosaicError(Exception):
     """Raised when a mosaic can't be created. The command line interface
@@ -57,11 +49,19 @@ def check_on_error(on_error: str) -> None:
         )
 
 
-def handle_bad_image(message: str, on_error: str, placeholder_path: str) -> None:
+def handle_bad_image(
+    message: str, on_error: str, placeholder_path: str, exc=None
+) -> None:
     """Reports an image that can't be turned into a slice. on_error picks how:
     "placeholder" warns and writes a .error file holding the message, which the
     pdf shows as a captioned "Error" cell; "skip" warns and leaves it out;
-    "strict" raises so one bad image fails the whole run."""
+    "strict" raises so one bad image fails the whole run. exc is the exception
+    behind it, if any. Its type and message are added to the message, the type
+    since some messages, like MemoryError's, are empty, and its traceback is
+    logged at debug level so a bug can be found without reproducing it."""
+    if exc is not None:
+        message += ": " + type(exc).__name__ + (": %s" % exc if str(exc) else "")
+        logger.debug("Traceback for: %s" % message, exc_info=exc)
     if on_error == "strict":
         raise MosaicError(message)
     if on_error == "placeholder":
@@ -113,6 +113,41 @@ def load_stream_img(stream, filename: str):
     return nb.Nifti1Image.from_stream(stream)
 
 
+def write_slice_png(
+    img, out_path: str, display_mode, cut_coords, colorbar, downsample
+) -> None:
+    """Plots a 2D or 3D image to out_path, then crops, downsamples and
+    brightens the png."""
+    if len(img.shape) == 3:
+        plot_img(
+            img,
+            display_mode=display_mode,
+            cut_coords=cut_coords,
+            colorbar=colorbar,
+            annotate=False,
+        )
+        plt.savefig(out_path, transparent=True)
+    else:
+        img_data = img.get_fdata()
+        img_data = np.flipud(img_data.T)
+
+        plt.imsave(out_path, img_data, cmap="gray")
+    plt.close()
+
+    # Remove transparent margins
+    png = PIL.Image.open(out_path)
+    new_png = png.crop(png.getbbox()).convert("L")
+
+    if downsample:
+        height, width = new_png.size
+        new_size = (round(height / downsample), round(width / downsample))
+        new_png = new_png.resize(new_size)
+
+    new_png = enhance_brightness(new_png)
+
+    new_png.save(out_path)
+
+
 def create_slice_img(
     img_path: str | tuple,
     out_dir: str,
@@ -126,8 +161,7 @@ def create_slice_img(
     """Creates a png of a slice(s) of a nifti. Defaults to a single midline
     sagittal slice. img_path is a path to read from disk, or a
     (filename, stream) tuple to read from an already open stream, in which case
-    the filename is only used to name the png. on_error is one of
-    ON_ERROR_MODES; see handle_bad_image."""
+    the filename is only used to name the png."""
     stream = None
     if isinstance(img_path, tuple):
         img_path, stream = img_path
@@ -146,62 +180,31 @@ def create_slice_img(
             img = load_stream_img(stream, img_path)
         else:
             img = nb.load(img_path)
-    except FileNotFoundError:
-        handle_bad_image("%s was not found." % img_path, on_error, error_path)
-        return
-    except IMAGE_READ_ERRORS as e:
-        handle_bad_image(
-            "%s couldn't be read: %s" % (img_path, e), on_error, error_path
-        )
+    except Exception as e:
+        handle_bad_image("%s couldn't be read" % img_path, on_error, error_path, e)
         return
 
-    if len(img.shape) == 2:
-        out_file += "_2D"
-
-    out_path = unique_path(os.path.join(out_dir, out_file + ".png"))
-
-    if len(img.shape) == 3:
-        try:
-            plot_img(
-                img,
-                display_mode=display_mode,
-                cut_coords=cut_coords,
-                colorbar=colorbar,
-                annotate=False,
-            )
-        except (EOFError, np._core._exceptions._ArrayMemoryError) as e:
-            plt.close()
-            handle_bad_image(
-                "%s couldn't be plotted: %s" % (img_path, e), on_error, error_path
-            )
-            return
-
-        plt.savefig(out_path, transparent=True)
-    elif len(img.shape) == 2:
-        logger.warning("%s is a 2D image." % img_path)
-        img_data = img.get_fdata()
-        img_data = np.flipud(img_data.T)
-
-        plt.imsave(out_path, img_data, cmap="gray")
-    else:
+    if len(img.shape) not in (2, 3):
         handle_bad_image(
             "%s is %dD." % (img_path, len(img.shape)), on_error, error_path
         )
         return
-    plt.close()
 
-    # Remove transparent margins
-    png = PIL.Image.open(out_path)
-    new_png = png.crop(png.getbbox()).convert("L")
+    if len(img.shape) == 2:
+        logger.warning("%s is a 2D image." % img_path)
+        out_file += "_2D"
 
-    if downsample:
-        height, width = new_png.size
-        new_size = (round(height / downsample), round(width / downsample))
-        new_png = new_png.resize(new_size)
+    out_path = unique_path(os.path.join(out_dir, out_file + ".png"))
 
-    new_png = enhance_brightness(new_png)
-
-    new_png.save(out_path)
+    try:
+        write_slice_png(img, out_path, display_mode, cut_coords, colorbar, downsample)
+    except Exception as e:
+        plt.close()
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        if isinstance(e, OSError) and e.filename == out_path:
+            raise
+        handle_bad_image("%s couldn't be plotted" % img_path, on_error, error_path, e)
 
 
 def create_sized_img(img_path: str) -> Image:
@@ -278,8 +281,6 @@ def create_mosaic_table(img_dir_path: str, page_width: int, styles) -> Table:
         for img_path in image_path_list
     ]
 
-    # Error cells have no width of their own, so they fit whatever the images
-    # need, or the max image width if there are no images.
     img_widths = [row[0]._width for row in table_data if isinstance(row[0], Image)]
     largest_img_width = max(img_widths, default=MAX_IMG_WIDTH)
     num_col = int(page_width / largest_img_width)
@@ -357,6 +358,16 @@ def create_pdf(img_dir_path: str, out_path: str, metadata=None) -> None:
             % (img_dir_path, os.path.join(img_dir_path, "Anatomical"))
         )
 
+    error_paths = sorted(glob.glob(os.path.join(img_dir_path, "*", "*.error")))
+    if error_paths and not glob.glob(os.path.join(img_dir_path, "*", "*.png")):
+        with open(error_paths[0]) as f:
+            first_error = f.read().strip()
+        raise MosaicError(
+            "All %d images failed, which suggests a bug or a problem with the "
+            "environment rather than bad data. The first error was: %s"
+            % (len(error_paths), first_error)
+        )
+
     for d in img_dirs:
         title_text = os.path.basename(d) + " Images"
         title = Paragraph(title_text, styles["Title"])
@@ -431,8 +442,7 @@ def create_mosaic_pdf(
     files_dict=None,
     on_error="placeholder",
 ) -> None:
-    """Creates a mosaic pdf. on_error is one of ON_ERROR_MODES; see
-    handle_bad_image."""
+    """Creates a mosaic pdf."""
     check_on_error(on_error)
 
     if png_out_dir:
@@ -491,8 +501,19 @@ async def create_mosaic_pdf_async(
             os.makedirs(dtype_png_dir)
             for filename, opener in file_list:
                 logger.info(f"Streaming {filename} into {dtype_png_dir}")
-                stream = await opener()
-                data = b"".join([chunk async for chunk in stream])
+                try:
+                    stream = await opener()
+                    data = b"".join([chunk async for chunk in stream])
+                except Exception as e:
+                    handle_bad_image(
+                        "%s couldn't be downloaded" % filename,
+                        on_error,
+                        os.path.join(
+                            dtype_png_dir, os.path.basename(filename) + ".error"
+                        ),
+                        e,
+                    )
+                    continue
                 with io.BytesIO(data) as buf:
                     create_slice_img((filename, buf), dtype_png_dir, **slice_kwargs)
 
