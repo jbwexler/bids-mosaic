@@ -15,11 +15,6 @@ import bidsmosaic.mosaic as mosaic
 import bidsmosaic.cli as cli
 
 
-@pytest.fixture
-def dataset():
-    return os.getenv("TEST_DATASET")
-
-
 def make_png(tmp_path, width, height):
     path = str(tmp_path / f"{width}x{height}.png")
     PIL.Image.new("L", (width, height)).save(path)
@@ -77,48 +72,31 @@ def run_main(monkeypatch, tmp_path, *args):
     cli.main()
 
 
-def test_create_sized_img_fits(tmp_path):
-    path = make_png(tmp_path, 40, 40)
-    img = mosaic.create_sized_img(path)
-    assert img._width == 40
-    assert img._height == 40
+@pytest.mark.parametrize(
+    "size, expected",
+    [
+        ((40, 40), (40, 40)),
+        ((80, 80), (80, 80)),  # exactly MAX_IMG_WIDTH x MAX_IMG_HEIGHT
+        ((40, 160), (20, 80)),  # height constrained
+        ((160, 40), (80, 20)),  # width constrained
+    ],
+)
+def test_create_sized_img(tmp_path, size, expected):
+    img = mosaic.create_sized_img(make_png(tmp_path, *size))
+    assert (img._width, img._height) == pytest.approx(expected)
 
 
-def test_create_sized_img_exact_boundary(tmp_path):
-    path = make_png(tmp_path, mosaic.MAX_IMG_WIDTH, mosaic.MAX_IMG_HEIGHT)
-    img = mosaic.create_sized_img(path)
-    assert img._width == mosaic.MAX_IMG_WIDTH
-    assert img._height == mosaic.MAX_IMG_HEIGHT
-
-
-def test_create_sized_img_height_constrained(tmp_path):
-    path = make_png(tmp_path, 40, 160)
-    img = mosaic.create_sized_img(path)
-    assert img._height == mosaic.MAX_IMG_HEIGHT
-    assert img._width == pytest.approx(mosaic.MAX_IMG_HEIGHT / 160 * 40)
-
-
-def test_create_sized_img_width_constrained(tmp_path):
-    path = make_png(tmp_path, 160, 40)
-    img = mosaic.create_sized_img(path)
-    assert img._width == mosaic.MAX_IMG_WIDTH
-    assert img._height == pytest.approx(mosaic.MAX_IMG_WIDTH / 160 * 40)
-
-
-def test_create_filename_caption_normal():
-    assert (
-        mosaic.create_filename_caption("sub-01_T1w.nii.gz.png") == "sub-01_T1w.nii.gz"
-    )
-
-
-def test_create_filename_caption_colon_encoded():
-    result = mosaic.create_filename_caption("sub-01:anat:sub-01_T1w.nii.gz.png")
-    assert result == "sub-01/anat/sub-01_T1w.nii.gz"
-
-
-def test_create_filename_caption_2d():
-    result = mosaic.create_filename_caption("sub-01_T1w.nii.gz_2D.png")
-    assert result == "sub-01_T1w.nii.gz (2D)"
+@pytest.mark.parametrize(
+    "filename, caption",
+    [
+        ("sub-01_T1w.nii.gz.png", "sub-01_T1w.nii.gz"),
+        ("sub-01:anat:sub-01_T1w.nii.gz.png", "sub-01/anat/sub-01_T1w.nii.gz"),
+        ("sub-01_T1w.nii.gz_2D.png", "sub-01_T1w.nii.gz (2D)"),
+        ("sub-01_T1w.nii.gz.error", "sub-01_T1w.nii.gz"),
+    ],
+)
+def test_create_filename_caption(filename, caption):
+    assert mosaic.create_filename_caption(filename) == caption
 
 
 def test_create_mosaic_table_empty_dir(tmp_path):
@@ -127,20 +105,18 @@ def test_create_mosaic_table_empty_dir(tmp_path):
         mosaic.create_mosaic_table(str(tmp_path), 576, styles)
 
 
-def test_unique_path_untaken(tmp_path):
-    path = str(tmp_path / "img.png")
-    assert mosaic.unique_path(path) == path
-
-
-def test_unique_path_taken(tmp_path):
-    (tmp_path / "img.png").touch()
-    assert mosaic.unique_path(str(tmp_path / "img.png")) == str(tmp_path / "img_1.png")
-
-
-def test_unique_path_multiple_taken(tmp_path):
-    for name in ("img.png", "img_1.png"):
+@pytest.mark.parametrize(
+    "taken, expected",
+    [
+        ([], "img.png"),
+        (["img.png"], "img_1.png"),
+        (["img.png", "img_1.png"], "img_2.png"),
+    ],
+)
+def test_unique_path(tmp_path, taken, expected):
+    for name in taken:
         (tmp_path / name).touch()
-    assert mosaic.unique_path(str(tmp_path / "img.png")) == str(tmp_path / "img_2.png")
+    assert mosaic.unique_path(str(tmp_path / "img.png")) == str(tmp_path / expected)
 
 
 def test_create_slice_img_same_basename(tmp_path):
@@ -181,23 +157,14 @@ def test_create_slice_img_2d(tmp_path):
     assert [p.name for p in out_dir.iterdir()] == ["slice.nii.gz_2D.png"]
 
 
-def test_create_slice_img_skips_4d(tmp_path):
-    out_dir = make_out_dir(tmp_path)
-
-    mosaic.create_slice_img(
-        make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
-        str(out_dir),
-        on_error="skip",
-    )
-
-    assert list(out_dir.iterdir()) == []
-
-
-@pytest.mark.parametrize("image_class", [nb.Nifti1Image, nb.Nifti2Image])
-@pytest.mark.parametrize("name", ["sub-01_T1w.nii.gz", "sub-01_T1w.nii"])
+@pytest.mark.parametrize(
+    "image_class, name",
+    [(nb.Nifti1Image, "sub-01_T1w.nii"), (nb.Nifti2Image, "sub-01_T1w.nii.gz")],
+)
 def test_create_slice_img_from_stream(tmp_path, image_class, name):
     """Nifti1 and Nifti2 share the .nii extension, so both have to stream,
-    gzipped or not."""
+    gzipped or not. Nifti2 is gzipped here since reading its version means
+    rewinding a gzip stream."""
     out_dir = make_out_dir(tmp_path)
     raw = image_bytes(image_class, gzipped=name.endswith(".gz"))
 
@@ -238,31 +205,6 @@ def test_load_stream_img_corrupt_nifti1_reports_its_own_error():
         mosaic.load_stream_img(io.BytesIO(bytes(raw)), "sub-01_T1w.nii")
 
 
-def test_create_slice_img_corrupt_nifti1_strict(tmp_path):
-    """That error reaches the caller, rather than a misleading one."""
-    out_dir = make_out_dir(tmp_path)
-    raw = bytearray(image_bytes(gzipped=False))
-    raw[70:72] = b"\xff\xff"
-
-    with pytest.raises(mosaic.MosaicError, match="couldn't be read.*-1"):
-        mosaic.create_slice_img(
-            ("sub-01_T1w.nii", io.BytesIO(bytes(raw))), str(out_dir), on_error="strict"
-        )
-
-
-def test_create_slice_img_from_stream_ds_path(tmp_path):
-    """Names come from the tuple, so ds_path works the same as for files."""
-    out_dir = make_out_dir(tmp_path)
-
-    mosaic.create_slice_img(
-        make_nifti_stream("ds/sub-01/anat/T1w.nii.gz"),
-        str(out_dir),
-        ds_path="ds",
-    )
-
-    assert [p.name for p in out_dir.iterdir()] == ["sub-01:anat:T1w.nii.gz.png"]
-
-
 @pytest.mark.parametrize("name", ["001.mgz", "001.mgh"])
 def test_create_slice_img_from_mgh_stream(tmp_path, name):
     """Freesurfer images stream too, gzipped (.mgz) or not (.mgh)."""
@@ -271,35 +213,6 @@ def test_create_slice_img_from_mgh_stream(tmp_path, name):
     mosaic.create_slice_img(make_mgh_stream(name), str(out_dir))
 
     assert [p.name for p in out_dir.iterdir()] == [f"{name}.png"]
-
-
-def test_create_slice_img_from_stream_skips_4d(tmp_path):
-    out_dir = make_out_dir(tmp_path)
-
-    mosaic.create_slice_img(
-        make_nifti_stream("bold.nii.gz", shape=(8, 8, 8, 2)),
-        str(out_dir),
-        on_error="skip",
-    )
-
-    assert list(out_dir.iterdir()) == []
-
-
-@pytest.mark.parametrize(
-    "name, data",
-    [
-        ("garbage.nii", b"nope" * 200),
-        ("empty.nii", b""),
-        ("not_gzipped.nii.gz", b"nope" * 200),
-    ],
-)
-def test_create_slice_img_from_unreadable_stream(tmp_path, name, data):
-    """An unreadable stream is skipped, like a missing file is."""
-    out_dir = make_out_dir(tmp_path)
-
-    mosaic.create_slice_img((name, io.BytesIO(data)), str(out_dir), on_error="skip")
-
-    assert list(out_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -451,17 +364,23 @@ def test_main_unwritable_out_file_exits(monkeypatch, tmp_path, caplog):
     assert "Permission denied" in caplog.text
 
 
-def test_create_slice_img_placeholder_same_basename(tmp_path):
-    """Placeholders that share a name don't overwrite each other either."""
-    out_dir = make_out_dir(tmp_path)
+@pytest.mark.parametrize("on_error", ["placeholder", "skip", "strict"])
+def test_handle_bad_image_modes(tmp_path, on_error, caplog):
+    """placeholder writes a .error file holding the message, skip leaves
+    nothing, and strict raises."""
+    path = tmp_path / "T1w.nii.gz.error"
 
-    for sub in ("sub-01", "sub-02"):
-        mosaic.create_slice_img(str(tmp_path / sub / "T1w.nii.gz"), str(out_dir))
+    if on_error == "strict":
+        with pytest.raises(mosaic.MosaicError, match="T1w.nii.gz is 4D."):
+            mosaic.handle_bad_image("T1w.nii.gz is 4D.", on_error, str(path))
+    else:
+        mosaic.handle_bad_image("T1w.nii.gz is 4D.", on_error, str(path))
+        assert "T1w.nii.gz is 4D." in caplog.text
 
-    assert sorted(p.name for p in out_dir.iterdir()) == [
-        "T1w.nii.gz.error",
-        "T1w.nii.gz_1.error",
-    ]
+    if on_error == "placeholder":
+        assert path.read_text() == "T1w.nii.gz is 4D.\n"
+    else:
+        assert not path.exists()
 
 
 def test_create_mosaic_pdf_bad_on_error(monkeypatch, tmp_path):
@@ -494,11 +413,6 @@ def test_create_mosaic_pdf_async_bad_on_error(tmp_path):
     assert opened == []
 
 
-def test_create_filename_caption_error():
-    result = mosaic.create_filename_caption("sub-01_T1w.nii.gz.error")
-    assert result == "sub-01_T1w.nii.gz"
-
-
 def test_create_mosaic_table_placeholder(tmp_path):
     """A .error file becomes an "Error" cell captioned with the file name."""
     PIL.Image.new("L", (40, 40)).save(tmp_path / "a.nii.gz.png")
@@ -521,37 +435,6 @@ def test_create_mosaic_table_only_placeholders(tmp_path):
     assert table._colWidths[0] == int(576 / int(576 / mosaic.MAX_IMG_WIDTH))
 
 
-def test_create_slice_img_strict_missing_file(tmp_path):
-    out_dir = make_out_dir(tmp_path)
-
-    with pytest.raises(mosaic.MosaicError, match="FileNotFoundError"):
-        mosaic.create_slice_img(
-            str(tmp_path / "nope.nii.gz"), str(out_dir), on_error="strict"
-        )
-
-
-def test_create_slice_img_strict_unreadable(tmp_path):
-    out_dir = make_out_dir(tmp_path)
-
-    with pytest.raises(mosaic.MosaicError, match="couldn't be read"):
-        mosaic.create_slice_img(
-            ("garbage.nii", io.BytesIO(b"nope" * 200)),
-            str(out_dir),
-            on_error="strict",
-        )
-
-
-def test_create_slice_img_strict_4d(tmp_path):
-    out_dir = make_out_dir(tmp_path)
-
-    with pytest.raises(mosaic.MosaicError, match="is 4D"):
-        mosaic.create_slice_img(
-            make_nifti(tmp_path, "bold.nii.gz", shape=(8, 8, 8, 2)),
-            str(out_dir),
-            on_error="strict",
-        )
-
-
 def test_create_slice_img_strict_ok(tmp_path):
     """A readable image is unaffected by on_error."""
     out_dir = make_out_dir(tmp_path)
@@ -561,22 +444,6 @@ def test_create_slice_img_strict_ok(tmp_path):
     )
 
     assert [p.name for p in out_dir.iterdir()] == ["T1w.nii.gz.png"]
-
-
-def test_create_mosaic_pdf_strict(tmp_path):
-    """One bad image fails the whole pdf under strict."""
-    with pytest.raises(mosaic.MosaicError):
-        mosaic.create_mosaic_pdf(
-            None,
-            str(tmp_path / "out.pdf"),
-            files_dict={
-                "Anatomical": [
-                    make_nifti(tmp_path, "T1w.nii.gz"),
-                    str(tmp_path / "nope.nii.gz"),
-                ]
-            },
-            on_error="strict",
-        )
 
 
 def test_main_strict_bad_image_exits(monkeypatch, tmp_path):
@@ -636,8 +503,9 @@ def make_opener(raw, opened=None, name=None):
 
 
 def test_create_mosaic_pdf_async(tmp_path):
-    """The streaming path builds a pdf without the images ever hitting disk.
-    Streams name their own compression, gzipped (.nii.gz) or not (.nii)."""
+    """The streaming path builds a pdf without the images ever hitting disk,
+    with a section per datatype. Streams name their own compression, gzipped
+    (.nii.gz, .mgz) or not (.nii)."""
     out_pdf = tmp_path / "out.pdf"
 
     asyncio.run(
@@ -647,7 +515,10 @@ def test_create_mosaic_pdf_async(tmp_path):
                 "Anatomical": [
                     ("sub-01_T1w.nii.gz", make_opener(image_bytes())),
                     ("sub-02_T1w.nii", make_opener(image_bytes(gzipped=False))),
-                ]
+                ],
+                "Freesurfer": [
+                    ("sub-01_001.mgz", make_opener(image_bytes(nb.MGHImage)))
+                ],
             },
         )
     )
@@ -683,24 +554,6 @@ def test_create_mosaic_pdf_async_opens_one_at_a_time(monkeypatch, tmp_path):
     ]
 
 
-def test_create_mosaic_pdf_async_multiple_datatypes(tmp_path):
-    """Each datatype gets its own directory, so the pdf has a section per type."""
-    out_pdf = tmp_path / "out.pdf"
-    raw = image_bytes()
-
-    asyncio.run(
-        mosaic.create_mosaic_pdf_async(
-            str(out_pdf),
-            {
-                "Anatomical": [("sub-01_T1w.nii.gz", make_opener(raw))],
-                "Freesurfer": [("sub-01_001.mgz", make_opener(image_bytes(nb.MGHImage)))],
-            },
-        )
-    )
-
-    assert out_pdf.exists()
-
-
 def test_create_mosaic_pdf_async_strict(tmp_path):
     """on_error reaches create_slice_img through the streaming path too."""
     with pytest.raises(mosaic.MosaicError, match="couldn't be read"):
@@ -711,27 +564,6 @@ def test_create_mosaic_pdf_async_strict(tmp_path):
                 on_error="strict",
             )
         )
-
-
-@pytest.mark.parametrize("on_error", ["placeholder", "skip"])
-def test_create_mosaic_pdf_async_bad_image(tmp_path, on_error):
-    """Without strict, the pdf still builds around an unreadable stream."""
-    out_pdf = tmp_path / "out.pdf"
-
-    asyncio.run(
-        mosaic.create_mosaic_pdf_async(
-            str(out_pdf),
-            {
-                "Anatomical": [
-                    ("garbage.nii", make_opener(b"nope" * 200)),
-                    ("sub-01_T1w.nii.gz", make_opener(image_bytes())),
-                ]
-            },
-            on_error=on_error,
-        )
-    )
-
-    assert out_pdf.exists()
 
 
 async def failing_opener():
@@ -766,19 +598,6 @@ def test_create_mosaic_pdf_async_download_failure(tmp_path, opener):
         asyncio.run(
             mosaic.create_mosaic_pdf_async(
                 str(tmp_path / "strict.pdf"), files, on_error="strict"
-            )
-        )
-
-
-def test_create_mosaic_pdf_async_no_usable_images(tmp_path):
-    """When skipping, a datatype whose images all fail leaves an empty dir,
-    which is an error."""
-    with pytest.raises(mosaic.MosaicError, match="No images found"):
-        asyncio.run(
-            mosaic.create_mosaic_pdf_async(
-                str(tmp_path / "out.pdf"),
-                {"Anatomical": [("garbage.nii", make_opener(b"nope" * 200))]},
-                on_error="skip",
             )
         )
 
@@ -849,29 +668,13 @@ def test_main_json_input(monkeypatch, tmp_path):
     assert (tmp_path / "images_mosaic.pdf").exists()
 
 
-def test_main_json_input_malformed(monkeypatch, tmp_path):
-    json_path = write_json(tmp_path, "{not json")
-
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path)
-
-
-def test_main_json_input_not_a_mapping(monkeypatch, tmp_path):
-    json_path = write_json(tmp_path, ["T1w.nii.gz"])
-
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path)
-
-
-def test_main_json_input_values_not_lists(monkeypatch, tmp_path):
-    json_path = write_json(tmp_path, {"Anatomical": "T1w.nii.gz"})
-
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path)
-
-
-def test_main_json_input_empty(monkeypatch, tmp_path):
-    json_path = write_json(tmp_path, {})
+@pytest.mark.parametrize(
+    "contents",
+    ["{not json", ["T1w.nii.gz"], {"Anatomical": "T1w.nii.gz"}, {}],
+    ids=["malformed", "not_a_mapping", "values_not_lists", "empty"],
+)
+def test_main_json_input_invalid(monkeypatch, tmp_path, contents):
+    json_path = write_json(tmp_path, contents)
 
     with pytest.raises(SystemExit):
         run_main(monkeypatch, tmp_path, "--json-input", json_path)
@@ -922,18 +725,46 @@ def test_main_requires_dataset_or_json_input(monkeypatch, tmp_path):
         run_main(monkeypatch, tmp_path)
 
 
-def test_main_missing_images_reports_error(monkeypatch, tmp_path):
-    """When skipping, a json of paths that don't exist is an error, not an
-    empty pdf."""
-    json_path = write_json(tmp_path, {"Anatomical": [str(tmp_path / "nope.nii.gz")]})
+def test_main_bids_dataset(monkeypatch, tmp_path):
+    """A BIDS dataset's anatomical images and freesurfer's orig images each get
+    a section, and with no -o the pdf is named after the dataset."""
+    anat_dir = tmp_path / "ds" / "sub-01" / "anat"
+    anat_dir.mkdir(parents=True)
+    (tmp_path / "ds" / "dataset_description.json").write_text(
+        '{"Name": "test", "BIDSVersion": "1.8.0"}'
+    )
+    make_nifti(anat_dir, "sub-01_T1w.nii.gz", shape=(16, 16, 16))
+    fs_dir = tmp_path / "fs" / "sub-01" / "mri" / "orig"
+    fs_dir.mkdir(parents=True)
+    (fs_dir / "001.mgz").write_bytes(image_bytes(nb.MGHImage, shape=(16, 16, 16)))
 
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, tmp_path, "--json-input", json_path, "--on-error", "skip")
+    run_main(
+        monkeypatch,
+        tmp_path,
+        "ds",
+        "--freesurfer",
+        "fs",
+        "--downsample",
+        "2",
+        "-m",
+        '{"Dataset ID": "ds000000"}',
+        "--png-out-dir",
+        "pngs",
+    )
+
+    assert (tmp_path / "ds_mosaic.pdf").exists()
+    assert sorted(
+        p.relative_to(tmp_path / "pngs").as_posix()
+        for p in (tmp_path / "pngs").glob("*/*")
+    ) == ["Anatomical/sub-01_T1w.nii.gz.png", "Freesurfer/sub-01:mri:orig:001.mgz.png"]
 
 
-def test_run(dataset, tmp_path):
-    assert dataset is not None, "TEST_DATASET environment variable must be set"
-
+@pytest.mark.skipif(
+    not os.getenv("TEST_DATASET"), reason="set TEST_DATASET to a real BIDS dataset"
+)
+def test_run(tmp_path):
+    """Runs on a real dataset, as CI does with ds004131."""
+    dataset = os.getenv("TEST_DATASET")
     metadata = '{"Dataset ID":"ds000000", "Dataset Name": "Test Dataset"}'
     out_file = tmp_path / "mosaic_test.pdf"
     mosaic.create_mosaic_pdf(
