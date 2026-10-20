@@ -570,14 +570,13 @@ def test_create_slice_img_skips_nilearn_gc(monkeypatch, tmp_path):
 def test_create_mosaic_pdf_async_keeps_loop_responsive(monkeypatch, tmp_path):
     """Slices are decoded and plotted off the event loop, so other tasks, like
     a broker polling redis, keep running. Two mosaics run at once too, plotting
-    from two threads. Each slice is padded with 1s of CPU-bound work, so on the
-    loop the heartbeat would stall for at least that long."""
+    from two threads. Each slice is padded with a 1s sleep, so on the loop the
+    heartbeat would stall for at least that long. A sleep rather than CPU-bound
+    padding, so the result doesn't depend on how the machine shares the GIL."""
     real_enhance_brightness = mosaic.enhance_brightness
 
     def slow_enhance_brightness(img):
-        end = time.perf_counter() + 1
-        while time.perf_counter() < end:
-            pass
+        time.sleep(1)
         return real_enhance_brightness(img)
 
     monkeypatch.setattr(mosaic, "enhance_brightness", slow_enhance_brightness)
