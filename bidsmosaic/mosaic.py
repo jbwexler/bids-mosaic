@@ -1,3 +1,4 @@
+import asyncio
 import numpy as np
 import os.path
 import glob
@@ -9,7 +10,9 @@ import logging
 import PIL.Image
 from bids import BIDSLayout
 from nilearn.plotting import plot_img
-import matplotlib.pyplot as plt
+import matplotlib.image
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import nibabel as nb
 from reportlab.platypus import (
     Paragraph,
@@ -113,26 +116,29 @@ def load_stream_img(stream, filename: str):
     return nb.Nifti1Image.from_stream(stream)
 
 
-def write_slice_png(
-    img, out_path: str, display_mode, cut_coords, colorbar, downsample
-) -> None:
-    """Plots a 2D or 3D image to out_path, then crops, downsamples and
-    brightens the png."""
+def write_slice_png(img, out_path: str, downsample) -> None:
+    """Plots a 2D image, or a 3D image's midline sagittal slice, to out_path,
+    then crops, downsamples and brightens the png. Doesn't use pyplot, whose
+    global state isn't thread-safe, so it can run in a worker thread."""
     if len(img.shape) == 3:
+        # nilearn only sizes figures it creates itself, so this is the size it
+        # would choose for one sagittal slice (XSlicer._default_figsize).
+        figure = Figure(figsize=(2.6, 2.3), facecolor="w")
+        FigureCanvasAgg(figure)
         plot_img(
             img,
-            display_mode=display_mode,
-            cut_coords=cut_coords,
-            colorbar=colorbar,
+            display_mode="x",
+            cut_coords=[0],
+            colorbar=False,
             annotate=False,
+            figure=figure,
         )
-        plt.savefig(out_path, transparent=True)
+        figure.savefig(out_path, transparent=True)
     else:
         img_data = img.get_fdata()
         img_data = np.flipud(img_data.T)
 
-        plt.imsave(out_path, img_data, cmap="gray")
-    plt.close()
+        matplotlib.image.imsave(out_path, img_data, cmap="gray")
 
     # Remove transparent margins
     png = PIL.Image.open(out_path)
@@ -151,17 +157,14 @@ def write_slice_png(
 def create_slice_img(
     img_path: str | tuple,
     out_dir: str,
-    display_mode="x",
-    cut_coords=np.array([0]),
-    colorbar=False,
     ds_path=None,
     downsample=None,
     on_error="placeholder",
 ) -> None:
-    """Creates a png of a slice(s) of a nifti. Defaults to a single midline
-    sagittal slice. img_path is a path to read from disk, or a
-    (filename, stream) tuple to read from an already open stream, in which case
-    the filename is only used to name the png."""
+    """Creates a png of a 3D image's midline sagittal slice, or of a whole 2D
+    image. img_path is a path to read from disk, or a (filename, stream) tuple
+    to read from an already open stream, in which case the filename is only
+    used to name the png."""
     stream = None
     if isinstance(img_path, tuple):
         img_path, stream = img_path
@@ -197,9 +200,8 @@ def create_slice_img(
     out_path = unique_path(os.path.join(out_dir, out_file + ".png"))
 
     try:
-        write_slice_png(img, out_path, display_mode, cut_coords, colorbar, downsample)
+        write_slice_png(img, out_path, downsample)
     except Exception as e:
-        plt.close()
         if os.path.exists(out_path):
             os.remove(out_path)
         if isinstance(e, OSError) and e.filename == out_path:
@@ -490,12 +492,16 @@ async def create_mosaic_pdf_async(
     (filename, opener) pairs, where opener is a zero-arg async callable
     returning an async byte-stream. Nothing is opened until that file's turn
     comes, so only one image is ever held in memory, and each stream is created
-    on the same event loop that reads it."""
+    on the same event loop that reads it. Decoding, plotting and building the
+    pdf are CPU-bound, so they run in a worker thread to keep the event loop
+    free for other tasks."""
     check_on_error(on_error)
 
     slice_kwargs = {"downsample": downsample, "on_error": on_error}
 
-    with tempfile.TemporaryDirectory() as png_dir:
+    # If the task is cancelled mid-slice, the thread finishes on its own while
+    # the dir is removed, and its errors mustn't replace the CancelledError.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as png_dir:
         for dtype, file_list in files_dict.items():
             dtype_png_dir = os.path.join(png_dir, dtype)
             os.makedirs(dtype_png_dir)
@@ -515,7 +521,9 @@ async def create_mosaic_pdf_async(
                     )
                     continue
                 with io.BytesIO(data) as buf:
-                    create_slice_img((filename, buf), dtype_png_dir, **slice_kwargs)
+                    await asyncio.to_thread(
+                        create_slice_img, (filename, buf), dtype_png_dir, **slice_kwargs
+                    )
 
         logger.info(f"Creating pdf at {out_file}")
-        create_pdf(png_dir, out_file, metadata=metadata)
+        await asyncio.to_thread(create_pdf, png_dir, out_file, metadata=metadata)
