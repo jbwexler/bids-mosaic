@@ -3,6 +3,7 @@ import os
 import io
 import sys
 import json
+import gc
 import gzip
 import logging
 import asyncio
@@ -553,6 +554,17 @@ def test_create_mosaic_pdf_async_opens_one_at_a_time(monkeypatch, tmp_path):
     assert events == [
         step for name in names for step in (("open", name), ("plot", name))
     ]
+
+
+def test_create_slice_img_skips_nilearn_gc(monkeypatch, tmp_path):
+    """nilearn's forced gc.collect() would freeze a big process's event loop,
+    so plotting mustn't trigger one. Fails if a nilearn upgrade moves it."""
+    collections = []
+    monkeypatch.setattr(gc, "collect", lambda *args: collections.append(args))
+
+    mosaic.create_slice_img(make_nifti(tmp_path, "T1w.nii.gz"), str(tmp_path))
+
+    assert collections == []
 
 
 def test_create_mosaic_pdf_async_keeps_loop_responsive(monkeypatch, tmp_path):

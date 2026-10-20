@@ -5,6 +5,7 @@ import glob
 import gzip
 import io
 import tempfile
+import types
 import json
 import logging
 import PIL.Image
@@ -28,6 +29,18 @@ from reportlab.lib import colors
 
 
 logger = logging.getLogger(__name__)
+
+# nilearn forces a full gc.collect() each time it reads an image's data. That
+# walks every object in the process while holding the GIL, so in a big process
+# like a task worker it freezes the event loop for up to seconds per slice, even
+# from a worker thread. Image data is freed by reference counting anyway, so
+# the collection is skipped. This affects nilearn's other users in the process.
+try:
+    from nilearn._utils import niimg as _nilearn_niimg
+
+    _nilearn_niimg.gc = types.SimpleNamespace(collect=lambda *args, **kwargs: 0)
+except ImportError:
+    pass
 
 MAX_IMG_HEIGHT = 80
 MAX_IMG_WIDTH = 80
